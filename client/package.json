@@ -1,0 +1,20 @@
+{
+  "name": "@genvy/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@genvy/shared": "*",
+    "howler": "^2.2.4",
+    "phaser": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/howler": "^2.2.12",
+    "vite": "^6.1.0"
+  }
+}
