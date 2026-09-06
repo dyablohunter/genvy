@@ -5,6 +5,8 @@
   --hud-line-dim: rgba(29, 233, 255, 0.35);
   --hud-accent: #ff9d1d;
   --hud-danger: #ff3d5a;
+  /* Caution, not failure: paid work about to run, stale views, soft limits. */
+  --hud-warn: #ffc63d;
   --hud-ok: #3dff8c;
   --hud-text: #cfeeff;
   --hud-text-dim: #6f9ab0;
@@ -56,13 +58,95 @@ body {
 .g-dock {
   position: absolute;
   top: 60px;
-  bottom: 12px;
+  /* Flush to the viewport edge: when a dock's panels overflow and it scrolls,
+     a bottom gap wastes the very space that ran out. */
+  bottom: 0;
   width: 300px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* While panels animate: their translate would otherwise extend the scroll
+   area and flash a scrollbar for the length of the transition. */
+.g-dock.g-clip {
+  overflow-y: hidden;
+}
+
+/* ---------- Page-scroll mode (forge steps 1/2) ----------
+   The step panels never scroll internally: the BODY scrolls, with the game
+   canvas and top bar pinned. The left dock joins document flow so its height
+   grows the page; center panels drop their JS centering (hence !important —
+   inline styles from mountPanel must lose) and center by margin instead. */
+body.g-page-scroll {
+  overflow-y: auto;
+  height: auto;
+  min-height: 100%;
+}
+
+body.g-page-scroll #app {
+  height: auto;
+  min-height: 100vh;
+}
+
+body.g-page-scroll #game-canvas-host {
+  position: fixed;
+  inset: 0;
+}
+
+body.g-page-scroll #genvy-topbar {
+  position: fixed;
+}
+
+body.g-page-scroll #hud-root {
+  position: relative;
+  inset: auto;
+  min-height: 100vh;
+  height: auto;
+}
+
+body.g-page-scroll .g-dock-left {
+  position: static;
+  overflow: visible;
+  margin: 60px 0 32px 0;
+  bottom: auto;
+}
+
+body.g-page-scroll #hud-root > genvy-panel:not(#collection-drawer) {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
+  margin: 80px auto 32px;
+}
+
+/* The inventory hangs off the VIEWPORT, not the (now flowing) hud root —
+   otherwise it inherits the document's height and stops at its content. */
+body.g-page-scroll #collection-drawer,
+body.g-page-scroll #genvy-char-detail {
+  position: fixed;
+}
+
+/* The dock's scrollbar stays invisible until the pointer is over the dock —
+   the rail reads as chrome next to every panel otherwise. The gutter is
+   still reserved while scrollable, so nothing shifts on hover. */
+.g-dock {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: transparent transparent;
+}
+
+.g-dock:hover {
+  scrollbar-color: var(--hud-line-dim) transparent;
+}
+
+.g-dock::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.g-dock:hover::-webkit-scrollbar-thumb {
+  background: var(--hud-line-dim);
 }
 
 .g-dock-left {
@@ -82,6 +166,14 @@ body {
   position: static;
   width: 100%;
   min-width: 0;
+}
+
+/* Inside a scrolling dock the DOCK owns scrolling: a tall panel body (the
+   animation forge grew provider/model/size fields) must grow freely, not
+   nest a second scrollbar beside the dock's. */
+.g-dock genvy-panel .gp-body {
+  max-height: none;
+  overflow-y: visible;
 }
 
 /* ---------- Panel ---------- */
@@ -123,7 +215,9 @@ genvy-panel .gp-body {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  /* Labels sit flush at the top of their field, so the gap between stacked
+     controls IS the space above each label — 10px read as cramped. */
+  gap: 14px;
   max-height: 70vh;
   overflow-y: auto;
   overflow-x: hidden;
@@ -185,11 +279,102 @@ genvy-button[variant='danger'] button {
   background: rgba(255, 61, 90, 0.07);
 }
 
+/* A toggle that is currently OFF: the word stays, struck through, so the
+   button reads as one thing in two states instead of two different labels. */
+genvy-button[data-off] button {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
 /* ---------- Fields ---------- */
 .g-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* Wrapper for fields grouped inside a plain div: panels space their own
+   children, but a nested container has no gap of its own, so its labels end
+   up touching the control above them. */
+.g-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Remove-tile affordance on a palette cell (hover-revealed, like the anchor
+   grid's buttons) — deleting art should never be a stray click. */
+.g-tile {
+  position: relative;
+}
+
+.g-tile-delete {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--hud-danger);
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 61, 90, 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.g-tile:hover .g-tile-delete {
+  opacity: 1;
+}
+
+.g-tile-delete:hover {
+  background: var(--hud-danger);
+  color: #0b0f16;
+}
+
+/* Make-seamless affordance, opposite corner from delete. */
+.g-tile-seamless {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--hud-ok);
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(61, 255, 140, 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.g-tile:hover .g-tile-seamless {
+  opacity: 1;
+}
+
+.g-tile-seamless:hover {
+  background: var(--hud-ok);
+  color: #0b0f16;
+}
+
+/* A tile that already wraps carries a quiet green corner. */
+.g-tile.is-seamless::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-width: 0 7px 7px 0;
+  border-style: solid;
+  border-color: transparent var(--hud-ok) transparent transparent;
+  opacity: 0.8;
 }
 
 .g-field label {
@@ -290,6 +475,49 @@ genvy-button[variant='danger'] button {
   flex: 1;
 }
 
+/* Spend readout: plain text, no button chrome — labels dim, values colored. */
+#genvy-topbar .spend {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+#genvy-topbar .g-spend-item {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+#genvy-topbar .g-spend-item .k {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--hud-text-dim);
+}
+
+#genvy-topbar .g-spend-item .v {
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  color: var(--hud-line);
+  text-shadow: 0 0 8px rgba(29, 233, 255, 0.35);
+}
+
+#genvy-topbar .g-spend-item .v.bal {
+  color: var(--hud-ok);
+  text-shadow: 0 0 8px rgba(61, 255, 140, 0.35);
+}
+
+#genvy-topbar .g-spend-item .v.bal.low {
+  color: var(--hud-danger);
+  text-shadow: 0 0 8px rgba(255, 61, 90, 0.45);
+}
+
+#genvy-topbar .g-spend-item .v.total {
+  color: var(--hud-accent);
+  text-shadow: 0 0 8px rgba(255, 157, 29, 0.35);
+}
+
 #genvy-topbar .forge-count {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -313,18 +541,52 @@ genvy-button[variant='danger'] button {
 }
 
 /* ---------- Asset cards / drawer ---------- */
+/* Slide-in inventory: full viewport height minus the header, flush right. */
 #collection-drawer {
   position: absolute;
-  top: 60px;
-  right: 12px;
-  bottom: 16px;
-  width: 300px;
+  top: 44px;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  z-index: 40;
+  overflow-y: auto;
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.55);
+  /* Hangs from the top bar and runs off the bottom edge — only its left
+     edge is a real boundary, so only that edge draws a border. */
+  border-top: none;
+  border-bottom: none;
+}
+
+#genvy-topbar .inv-btn {
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 2px;
+  line-height: 1.3;
+  color: var(--hud-line);
+  border: 1px solid var(--hud-line-dim);
+  padding: 5px 10px;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+
+#genvy-topbar .inv-btn:hover {
+  border-color: var(--hud-line);
+  box-shadow: 0 0 12px rgba(29, 233, 255, 0.35);
+  text-shadow: 0 0 8px rgba(29, 233, 255, 0.8);
 }
 
 .g-asset-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Floating action bar centered below the strip-review frames. */
+.g-strip-actions {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
 }
 
 genvy-asset-card {
@@ -431,6 +693,48 @@ genvy-asset-card .g-type {
   box-shadow: 0 0 30px rgba(29, 233, 255, 0.12);
 }
 
+/* Per-unit progress chips inside the busy panel (square, state-colored). */
+.g-busy-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.g-busy-steps .g-step {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 2px 7px;
+  border: 1px solid var(--hud-line-dim);
+  color: var(--hud-text-dim);
+  opacity: 0.4;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.g-busy-steps .g-step.active {
+  opacity: 1;
+  color: var(--hud-accent);
+  border-color: var(--hud-accent);
+  box-shadow: 0 0 10px rgba(255, 157, 29, 0.3);
+  animation: g-step-blink 0.9s ease-in-out infinite;
+}
+
+.g-busy-steps .g-step.done {
+  opacity: 1;
+  color: var(--hud-ok);
+  border-color: rgba(61, 255, 140, 0.55);
+}
+
+.g-busy-steps .g-step.failed {
+  opacity: 1;
+  color: var(--hud-danger);
+  border-color: rgba(255, 61, 90, 0.6);
+}
+
+@keyframes g-step-blink {
+  50% { opacity: 0.35; }
+}
+
 /* ---------- Toast ---------- */
 #genvy-toasts {
   position: absolute;
@@ -458,6 +762,12 @@ genvy-asset-card .g-type {
   border-color: var(--hud-danger);
   color: var(--hud-danger);
   box-shadow: 0 0 20px rgba(255, 61, 90, 0.25);
+}
+
+.g-toast.warn {
+  border-color: var(--hud-warn);
+  color: var(--hud-warn);
+  box-shadow: 0 0 20px rgba(255, 198, 61, 0.25);
 }
 
 .g-toast.success {
@@ -596,6 +906,14 @@ genvy-asset-card .g-type {
 /* Frame selection states */
 .g-frame-rect.g-active {
   outline: 1px solid var(--hud-accent);
+  z-index: 3;
+}
+
+/* Overlapping frames: the dimmed rects' opacity creates stacking contexts, so
+   a later sibling paints over an earlier frame's edge handles. Hovering lifts
+   the frame above its neighbours, making its borders reachable anywhere. */
+.g-frame-rect:hover {
+  z-index: 4;
 }
 
 .g-frame-bar.g-dim,
@@ -606,6 +924,30 @@ genvy-asset-card .g-type {
 
 .g-frame-rect.g-dim:hover {
   opacity: 0.7;
+}
+
+/* Frames the validation gate flagged (identity drift, multiple figures, ...). */
+.g-frame-bar.g-gate-fail .g-frame-ord {
+  color: var(--hud-danger);
+  border-color: rgba(255, 61, 90, 0.6);
+  box-shadow: 0 0 8px rgba(255, 61, 90, 0.25);
+}
+
+/* While actively drawing or re-slicing, frame bars fade out of the way. */
+.g-editing.g-drawing .g-frame-bar {
+  opacity: 0.15;
+  transition: opacity 0.12s;
+}
+
+/* Edit mode: hovered frames announce themselves with a color shift. */
+.g-editing .g-frame-rect.g-active:hover {
+  outline: 2px solid var(--hud-ok);
+  box-shadow: 0 0 14px rgba(61, 255, 140, 0.25) inset;
+}
+
+.g-editing .g-frame-rect.g-dim:hover {
+  outline: 1px solid var(--hud-line);
+  box-shadow: 0 0 10px rgba(29, 233, 255, 0.2) inset;
 }
 
 /* Drawing surface for adding shapes (rect drag / SHIFT lasso / SPACE pan) */
@@ -652,6 +994,17 @@ genvy-asset-card .g-type {
 }
 
 /* ---------- Clip rows ---------- */
+.g-clip-line {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.g-clip-line .g-clip-row {
+  flex: 1;
+  min-width: 0;
+}
+
 .g-clip-row {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -662,6 +1015,45 @@ genvy-asset-card .g-type {
   padding: 6px 10px;
   cursor: pointer;
   transition: all 0.12s;
+}
+
+/* EDIT + SAVE under the clip list: default (FORGE-sized) buttons, side by side. */
+.g-clip-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.g-clip-actions genvy-button {
+  flex: 1;
+}
+
+/* Free computed-clip actions: secondary to FORGE ANIMATION above them. */
+.g-free-row genvy-button button {
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 8px 6px;
+}
+
+/* Standalone square delete button beside each clip row (matches row height). */
+.g-clip-del {
+  flex: 0 0 auto;
+  width: 29px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--hud-text-dim);
+  border: 1px solid var(--hud-line-dim);
+  background: rgba(0, 0, 0, 0.3);
+  transition: all 0.12s;
+}
+
+.g-clip-del:hover {
+  color: var(--hud-danger);
+  border-color: var(--hud-danger);
+  background: rgba(255, 61, 90, 0.12);
+  box-shadow: 0 0 8px rgba(255, 61, 90, 0.3);
 }
 
 .g-clip-row:hover {
@@ -794,6 +1186,11 @@ genvy-asset-card .g-type {
   z-index: 2;
 }
 
+/* Draggable borders show as faint strips so they're discoverable. */
+.g-handle {
+  background: rgba(29, 233, 255, 0.16);
+}
+
 .g-handle:hover {
   background: rgba(255, 157, 29, 0.5);
 }
@@ -843,13 +1240,17 @@ genvy-asset-card .g-type {
 /* ---------- Variant squares ---------- */
 .g-variant-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  /* minmax(0, ...) stops big intrinsic-size images from blowing the tracks
+     past the panel body (which made the grid wider than the buttons). */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .g-variant-cell {
   position: relative;
   aspect-ratio: 1;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--hud-line-dim);
   background: rgba(0, 0, 0, 0.35);
   cursor: pointer;
@@ -870,6 +1271,213 @@ genvy-asset-card .g-type {
 .g-variant-cell.selected {
   border-color: var(--hud-accent);
   box-shadow: 0 0 14px rgba(255, 157, 29, 0.45);
+}
+
+/* Built from a base anchor that has since been regenerated. */
+.g-variant-cell.stale {
+  border-color: var(--hud-danger);
+  border-style: dashed;
+}
+
+.g-variant-cell.stale img {
+  opacity: 0.45;
+}
+
+.g-variant-cell.stale .g-variant-tag {
+  color: var(--hud-danger);
+  border-color: rgba(255, 61, 90, 0.5);
+}
+
+/* Per-anchor re-forge (↻) — appears on hover over a live, non-primary view. */
+.g-anchor-regen {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--hud-line);
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid var(--hud-line-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, border-color 0.12s;
+}
+
+.g-variant-cell:hover .g-anchor-regen {
+  opacity: 1;
+}
+
+/* Free W<->E mirror, opposite corner from the re-forge button. */
+.g-anchor-mirror {
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--hud-ok);
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid var(--hud-line-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.g-variant-cell:hover .g-anchor-mirror {
+  opacity: 1;
+}
+
+.g-anchor-mirror:hover {
+  border-color: var(--hud-ok);
+  box-shadow: 0 0 10px rgba(61, 255, 140, 0.35);
+}
+
+.g-anchor-regen:hover {
+  border-color: var(--hud-accent);
+  color: var(--hud-accent);
+}
+
+/* Centered modal (anchor re-forge notes). */
+.g-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.72);
+  pointer-events: auto;
+}
+
+/* Title + corner dismiss: closing is not an action peer of the real ones. */
+.g-modal-titlerow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.g-modal-close {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  color: var(--hud-text-dim);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.g-modal-close:hover {
+  color: var(--hud-danger);
+}
+
+/* A modal opened from inside another one (anchor version preview). */
+.g-modal-backdrop.g-modal-stacked {
+  z-index: 120;
+  background: rgba(2, 6, 12, 0.6);
+}
+
+.g-modal.g-modal-narrow {
+  width: min(360px, 90vw);
+}
+
+/* Version preview: checkerboard so transparent anchors read honestly. */
+.g-version-preview {
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hud-line-dim);
+  background-color: rgba(0, 0, 0, 0.4);
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.g-version-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.g-modal {
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px;
+  background: var(--hud-bg-solid);
+  border: 1px solid var(--hud-line-dim);
+  box-shadow: 0 0 34px rgba(29, 233, 255, 0.18);
+  /* Modals mount on <body>, OUTSIDE #hud-root — without this they inherit
+     the browser's default font instead of the HUD's, and every label in a
+     modal reads in the wrong typeface. */
+  font-family: var(--font-mono);
+  color: var(--hud-text);
+}
+
+.g-modal-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: var(--hud-line);
+}
+
+.g-modal-row {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.g-export-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.g-export-file {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--hud-line);
+  text-decoration: none;
+  padding: 6px 9px;
+  border: 1px solid var(--hud-line-dim);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.g-export-file:hover {
+  color: var(--hud-accent);
+  border-color: var(--hud-accent);
+}
+
+/* The whole export in one archive — the primary action. */
+.g-export-bundle {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--hud-accent);
+  border-color: var(--hud-accent);
+  background: rgba(255, 157, 29, 0.12);
+  padding: 11px 12px;
+  text-align: center;
+}
+
+.g-export-bundle:hover {
+  background: rgba(255, 157, 29, 0.22);
 }
 
 .g-variant-tag {
@@ -981,9 +1589,9 @@ genvy-asset-card .g-type {
 /* Detail panel sliding out from under the drawer */
 #genvy-char-detail {
   position: absolute;
-  right: 324px;
+  right: 328px; /* flush against the 320px inventory */
   width: 300px;
-  z-index: 25;
+  z-index: 45; /* above the inventory panel */
   background: var(--hud-bg-solid);
   border: 1px solid var(--hud-line);
   box-shadow: -6px 0 24px rgba(0, 0, 0, 0.5);
@@ -991,9 +1599,9 @@ genvy-asset-card .g-type {
 
 .g-session-header {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
 
 .g-session-title {
@@ -1006,10 +1614,11 @@ genvy-asset-card .g-type {
   white-space: nowrap;
 }
 
+/* One info row per line under the title. */
 .g-session-stats {
   display: flex;
-  gap: 8px;
-  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--hud-text-dim);
@@ -1018,8 +1627,8 @@ genvy-asset-card .g-type {
 .g-stat {
   display: flex;
   align-items: center;
-  gap: 3px;
-  cursor: help;
+  gap: 4px;
+  letter-spacing: 0.5px;
 }
 
 .g-stat-icon {
@@ -1069,6 +1678,62 @@ genvy-asset-card .g-type {
   outline: none;
 }
 
+/* Anchor version history: 64px thumbnails, click to restore. */
+.g-anchor-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.g-anchor-history-thumb {
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--hud-line-dim);
+  background: rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  position: relative;
+}
+
+.g-anchor-history-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.g-anchor-history-thumb:hover {
+  border-color: var(--hud-line);
+  box-shadow: 0 0 10px rgba(29, 233, 255, 0.35);
+}
+
+.g-anchor-history-thumb.selected {
+  border-color: var(--hud-accent);
+  box-shadow: 0 0 12px rgba(255, 149, 0, 0.45);
+}
+
+/* Red abort at the END of the busy card — abortable work only (setBusyCancel). */
+.g-busy-cancel {
+  display: block;
+  margin: 8px auto 0;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #ff5470;
+  background: rgba(255, 84, 112, 0.08);
+  border: 1px solid rgba(255, 84, 112, 0.6);
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.g-busy-cancel:hover:not(:disabled) {
+  background: rgba(255, 84, 112, 0.2);
+  box-shadow: 0 0 12px rgba(255, 84, 112, 0.35);
+}
+
+.g-busy-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -1080,4 +1745,97 @@ genvy-asset-card .g-type {
 
 ::-webkit-scrollbar-thumb {
   background: var(--hud-line-dim);
+}
+
+/* ---------- Icon tool bar ---------- */
+/* Square glyph buttons for tool rows. Six tools cannot fit as words in a
+   panel column, and squeezing them wraps the labels into unreadable stacks. */
+.g-icon-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+genvy-button.g-icon {
+  flex: 0 0 auto;
+}
+genvy-button.g-icon button {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+  letter-spacing: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Transient key hint ---------- */
+/* Sits over the top-middle of the stage: a control the user should reach for
+   NOW, shown where their eyes already are. Toasts are for news; this is for
+   keys, so it lives in a different place and shows the current choice. */
+#genvy-keyhint {
+  position: absolute;
+  top: 74px;
+  left: 50%;
+  transform: translate(-50%, -6px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-line-dim);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+  z-index: 20;
+}
+
+#genvy-keyhint.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.g-keyhint-art {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.g-keyhint-art .row {
+  display: flex;
+  gap: 4px;
+}
+
+.g-keyhint-art .key {
+  width: 30px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--hud-text-dim);
+  border: 1px solid var(--hud-line-dim);
+  background: rgba(29, 233, 255, 0.05);
+}
+
+/* The direction currently chosen — the hint doubles as a readout. */
+.g-keyhint-art .key.on {
+  color: var(--hud-accent);
+  border-color: rgba(255, 157, 29, 0.6);
+  background: rgba(255, 157, 29, 0.12);
+  box-shadow: 0 0 12px rgba(255, 157, 29, 0.25);
+}
+
+.g-keyhint-msg {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--hud-line);
+  text-shadow: 0 0 8px rgba(29, 233, 255, 0.5);
 }

@@ -7,6 +7,7 @@ type SoundName =
   | 'click'
   | 'confirm'
   | 'error'
+  | 'warn'
   | 'generate'
   | 'complete'
   | 'whoosh'
@@ -117,8 +118,10 @@ class UISoundEngine {
         this.tone(1400, 1800, 0.05, 'sine', 0.25);
         break;
       case 'click':
-        this.tone(900, 500, 0.07, 'square', 0.2);
-        this.tone(1800, 1200, 0.04, 'sine', 0.15);
+        // Holographic tap: fast energy chirp down + crystalline ping + air tick.
+        this.tone(2400, 800, 0.055, 'sine', 0.22);
+        this.tone(3200, 3200, 0.03, 'triangle', 0.12, 0.01);
+        this.noise(0.035, 0.07, 0, 7000, 2500);
         break;
       case 'confirm':
         this.tone(660, 660, 0.08, 'triangle', 0.4);
@@ -127,6 +130,12 @@ class UISoundEngine {
       case 'error':
         this.tone(220, 110, 0.22, 'sawtooth', 0.35);
         this.tone(160, 80, 0.25, 'square', 0.2, 0.04);
+        break;
+      case 'warn':
+        // Two soft mid taps — "look at this", not "something broke": no
+        // sawtooth growl, no downward slide, mid register instead of low.
+        this.tone(520, 520, 0.09, 'triangle', 0.3);
+        this.tone(440, 440, 0.12, 'triangle', 0.26, 0.1);
         break;
       case 'generate':
         this.tone(300, 1200, 0.5, 'sawtooth', 0.15);

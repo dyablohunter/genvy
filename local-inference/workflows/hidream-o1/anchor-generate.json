@@ -1,0 +1,200 @@
+{
+  "meta": {
+    "id": "anchor-generate",
+    "description": "HiDream-O1 dev txt2img (8B pixel-native, 28 steps, cfg 1). Transcribed from Comfy-Org image_hidream_o1_dev.json (2026-09-05); node inputs validated against live ComfyUI /object_info 2026-09-05.",
+    "models": {
+      "checkpoint": "hidream_o1_image_dev_fp8_scaled.safetensors (checkpoints/, ~10GB fp8)",
+      "textEncoder": "gemma4_e4b_it_fp8_scaled.safetensors (text_encoders/, bundled via checkpoint clip slot)"
+    }
+  },
+  "bindings": {
+    "positive": [
+      "110",
+      "inputs",
+      "text"
+    ],
+    "negative": [
+      "188",
+      "inputs",
+      "text"
+    ],
+    "seed": [
+      "108",
+      "inputs",
+      "noise_seed"
+    ],
+    "cfg": [
+      "108",
+      "inputs",
+      "cfg"
+    ],
+    "steps": [
+      "112",
+      "inputs",
+      "steps"
+    ],
+    "width": [
+      "156",
+      "inputs",
+      "width"
+    ],
+    "height": [
+      "156",
+      "inputs",
+      "height"
+    ],
+    "checkpointName": [
+      "6",
+      "inputs",
+      "ckpt_name"
+    ],
+    "lora": {
+      "checkpoint": "6",
+      "modelConsumers": [
+        [
+          "124",
+          "inputs",
+          "model"
+        ],
+        [
+          "112",
+          "inputs",
+          "model"
+        ]
+      ],
+      "clipConsumers": [
+        [
+          "110",
+          "inputs",
+          "clip"
+        ],
+        [
+          "188",
+          "inputs",
+          "clip"
+        ]
+      ]
+    }
+  },
+  "nodes": {
+    "6": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "hidream_o1_image_dev_fp8_scaled.safetensors"
+      }
+    },
+    "124": {
+      "class_type": "ModelNoiseScale",
+      "inputs": {
+        "noise_scale": 7.6,
+        "model": [
+          "6",
+          0
+        ]
+      }
+    },
+    "110": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "6",
+          1
+        ]
+      }
+    },
+    "188": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "6",
+          1
+        ]
+      }
+    },
+    "125": {
+      "class_type": "SamplerLCM",
+      "inputs": {
+        "s_noise": 1,
+        "s_noise_end": 1,
+        "noise_clip_std": 2.5
+      }
+    },
+    "112": {
+      "class_type": "BasicScheduler",
+      "inputs": {
+        "scheduler": "normal",
+        "steps": 28,
+        "denoise": 1.0,
+        "model": [
+          "124",
+          0
+        ]
+      }
+    },
+    "156": {
+      "class_type": "EmptyHiDreamO1LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "108": {
+      "class_type": "SamplerCustom",
+      "inputs": {
+        "add_noise": true,
+        "noise_seed": 0,
+        "cfg": 1,
+        "model": [
+          "124",
+          0
+        ],
+        "positive": [
+          "110",
+          0
+        ],
+        "negative": [
+          "188",
+          0
+        ],
+        "sampler": [
+          "125",
+          0
+        ],
+        "sigmas": [
+          "112",
+          0
+        ],
+        "latent_image": [
+          "156",
+          0
+        ]
+      }
+    },
+    "105": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "108",
+          0
+        ],
+        "vae": [
+          "6",
+          2
+        ]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "genvy",
+        "images": [
+          "105",
+          0
+        ]
+      }
+    }
+  }
+}

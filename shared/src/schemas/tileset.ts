@@ -14,6 +14,8 @@ export const TilesetSchema = AssetBaseSchema.extend({
         name: z.string().default(''),
         collides: z.boolean().default(false),
         tags: z.array(z.string()).default([]),
+        /** Index this tile was derived from (seamless variants, rotations). */
+        derivedFrom: z.number().int().min(0).optional(),
       }),
     )
     .default([]),

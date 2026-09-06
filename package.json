@@ -6,13 +6,15 @@
   "workspaces": [
     "shared",
     "server",
-    "client"
+    "client",
+    "local-inference"
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c yellow,cyan \"npm:dev -w server\" \"npm:dev -w client\"",
-    "build": "npm run build -w shared && npm run build -w server && npm run build -w client",
-    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p client",
-    "test": "npm run test -w server"
+    "dev:local": "npm run dev -w local-inference",
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w client && npm run build -w local-inference",
+    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p client && tsc --noEmit -p local-inference",
+    "test": "npm run test -w server && npm run test -w local-inference"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

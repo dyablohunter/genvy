@@ -416,111 +416,98 @@ export function extractBoxes(img: RawImage, boxes: CellBox[]): RawImage[] {
   });
 }
 
-function isBorderGreen(data: Buffer, i: number): boolean {
-  const r = data[i]!;
-  const g = data[i + 1]!;
-  const b = data[i + 2]!;
-  return data[i + 3]! > 8 && g >= 140 && r <= 110 && b <= 110 && g > r + 60 && g > b + 60;
+/**
+ * Quarter-turn rotation (clockwise, lossless). A side-view sprite rotated 90°
+ * is the same object aiming up or down — free views for anything whose facing
+ * is just an orientation.
+ */
+export async function rotateImage(img: RawImage, degrees: number): Promise<RawImage> {
+  const turn = ((Math.round(degrees / 90) * 90) % 360 + 360) % 360;
+  if (turn === 0) return img;
+  const { data, info } = await sharp(img.data, {
+    raw: { width: img.width, height: img.height, channels: 4 },
+  })
+    .rotate(turn, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height };
 }
 
 /**
- * Find the green (#00FF00) cell borders the prompts ask the model to draw and
- * return each cell's INTERIOR as a frame box. Deterministic: whatever crosses
- * a border is clipped at the cell wall instead of merging neighbors.
+ * Rotate about an arbitrary point rather than the image centre. A weapon turns
+ * around its grip, not around the middle of its bounding box — rotating about
+ * the centre is what makes derived views drift out of alignment.
+ *
+ * The image is first padded so the pivot IS the centre (rotation about the
+ * centre then equals rotation about the pivot), turned, and trimmed back to
+ * content; the pivot's new normalized position travels with it.
  */
-export function detectGreenCells(img: RawImage, minSize = 24): CellBox[] {
-  const { data, width, height } = img;
-  const visited = new Uint8Array(width * height);
-  const comps: { box: CellBox; pixels: number }[] = [];
+export async function rotateAboutPivot(
+  img: RawImage,
+  degrees: number,
+  pivot: { x: number; y: number },
+): Promise<{ img: RawImage; pivot: { x: number; y: number } }> {
+  const px = Math.max(0, Math.min(1, pivot.x)) * img.width;
+  const py = Math.max(0, Math.min(1, pivot.y)) * img.height;
+  const halfW = Math.max(px, img.width - px);
+  const halfH = Math.max(py, img.height - py);
+  const width = Math.max(1, Math.ceil(halfW * 2));
+  const height = Math.max(1, Math.ceil(halfH * 2));
 
-  for (let start = 0; start < width * height; start++) {
-    if (visited[start] || !isBorderGreen(data, start * 4)) continue;
-    // Flood fill this green component, tracking its bbox.
-    let minX = width, minY = height, maxX = 0, maxY = 0, pixels = 0;
-    const stack = [start];
-    visited[start] = 1;
-    while (stack.length > 0) {
-      const p = stack.pop()!;
-      const x = p % width;
-      const y = (p / width) | 0;
-      pixels++;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      const neighbors = [p - 1, p + 1, p - width, p + width];
-      for (const n of neighbors) {
-        if (n < 0 || n >= width * height || visited[n]) continue;
-        const nx = n % width;
-        if (Math.abs(nx - x) > 1) continue; // no row wrap
-        if (isBorderGreen(data, n * 4)) {
-          visited[n] = 1;
-          stack.push(n);
-        }
-      }
-    }
-    const w = maxX - minX + 1;
-    const h = maxY - minY + 1;
-    // A cell border is a large, sparse (ring-like) component.
-    if (w >= minSize && h >= minSize && pixels < w * h * 0.5) {
-      comps.push({ box: { x: minX, y: minY, w, h }, pixels });
-    }
+  const padded = Buffer.alloc(width * height * 4);
+  const dx = Math.round(halfW - px);
+  const dy = Math.round(halfH - py);
+  for (let y = 0; y < img.height; y++) {
+    const ty = dy + y;
+    if (ty < 0 || ty >= height) continue;
+    const src = y * img.width * 4;
+    img.data.copy(padded, (ty * width + dx) * 4, src, src + img.width * 4);
   }
 
-  // Interiors, inset past the measured border thickness.
-  const cells: CellBox[] = [];
-  for (const { box } of comps) {
-    const midY = box.y + Math.floor(box.h / 2);
-    const midX = box.x + Math.floor(box.w / 2);
-    const thickness = (scan: (t: number) => number) => {
-      let t = 0;
-      while (t < box.w / 4 && t < box.h / 4 && isBorderGreen(data, scan(t) * 4)) t++;
-      return Math.max(t, 2);
-    };
-    const tL = thickness((t) => midY * width + box.x + t);
-    const tR = thickness((t) => midY * width + box.x + box.w - 1 - t);
-    const tT = thickness((t) => (box.y + t) * width + midX);
-    const tB = thickness((t) => (box.y + box.h - 1 - t) * width + midX);
-    const inset = {
-      x: box.x + tL + 1,
-      y: box.y + tT + 1,
-      w: box.w - tL - tR - 2,
-      h: box.h - tT - tB - 2,
-    };
-    if (inset.w >= minSize && inset.h >= minSize) cells.push(inset);
-  }
-
-  // Drop cells nested inside another (double-ring artifacts) — keep the outer.
-  const kept = cells.filter((c, i) =>
-    !cells.some(
-      (o, j) =>
-        j !== i &&
-        o.x <= c.x && o.y <= c.y &&
-        o.x + o.w >= c.x + c.w && o.y + o.h >= c.y + c.h &&
-        (o.w > c.w || o.h > c.h),
-    ),
-  );
-  return readingOrder(kept);
+  const turned = await rotateImage({ data: padded, width, height }, degrees);
+  const box = contentBox(turned);
+  if (!box) return { img: turned, pivot: { x: 0.5, y: 0.5 } };
+  const cut = extractBoxes(turned, [box])[0]!;
+  return {
+    img: cut,
+    // The pivot is the centre of the rotated canvas, re-expressed in the crop.
+    pivot: { x: (turned.width / 2 - box.x) / box.w, y: (turned.height / 2 - box.y) / box.h },
+  };
 }
 
 /**
- * Erase the pure-green (#00FF00) cell borders the prompts ask the model to
- * draw around each pose. Tolerant of anti-aliased edges; a no-op when the
- * image has no such borders.
+ * Map a box through the same mirror/rotation applied to its image, so a
+ * derived sheet keeps knowing where its frames are. Image coords, y down,
+ * rotation clockwise.
  */
-export function stripBorderColor(img: RawImage): RawImage {
-  const out = Buffer.from(img.data);
-  for (let p = 0; p < img.width * img.height; p++) {
-    const i = p * 4;
-    if (out[i + 3]! <= 8) continue;
-    const r = out[i]!;
-    const g = out[i + 1]!;
-    const b = out[i + 2]!;
-    if (g >= 140 && r <= 110 && b <= 110 && g > r + 60 && g > b + 60) {
-      out[i + 3] = 0;
+export function transformBox(
+  box: CellBox,
+  srcW: number,
+  srcH: number,
+  opts: { mirror?: boolean; rotate?: number } = {},
+): CellBox {
+  let { x, y, w, h } = box;
+  let width = srcW;
+  if (opts.mirror) x = width - (x + w);
+  const turn = ((Math.round((opts.rotate ?? 0) / 90) * 90) % 360 + 360) % 360;
+  const height = srcH;
+  if (turn === 90) return { x: height - (y + h), y: x, w: h, h: w };
+  if (turn === 180) return { x: width - (x + w), y: height - (y + h), w, h };
+  if (turn === 270) return { x: y, y: width - (x + w), w: h, h: w };
+  return { x, y, w, h };
+}
+
+/** Horizontal mirror — the east anchor is a computed flip of west, never generated. */
+export function flipHorizontal(img: RawImage): RawImage {
+  const { width, height, data } = img;
+  const out = Buffer.alloc(data.length);
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      data.copy(out, row + (width - 1 - x) * 4, row + x * 4, row + x * 4 + 4);
     }
   }
-  return { data: out, width: img.width, height: img.height };
+  return { data: out, width, height };
 }
 
 /** True when the image has any meaningfully transparent pixels. */
@@ -576,6 +563,116 @@ export function trimAndCenter(cells: RawImage[]): RawImage[] {
   });
 }
 
+/**
+ * X of the character's foot mass: centroid of the alpha in the bottom band of
+ * the content box. Sprite Pipeline v2 §E3 — more stable than the bbox centre
+ * for poses that throw limbs sideways (walk contacts, kicks, lunges), which
+ * is what makes a cycle jitter when frames are centred by bounding box.
+ */
+export function footCentroidX(
+  cell: RawImage,
+  box: { x: number; y: number; w: number; h: number },
+  bandFraction = 0.2,
+): number {
+  const band = Math.max(1, Math.round(box.h * bandFraction));
+  const top = box.y + box.h - band;
+  let sum = 0;
+  let n = 0;
+  for (let y = top; y < box.y + box.h; y++) {
+    for (let x = box.x; x < box.x + box.w; x++) {
+      if (cell.data[(y * cell.width + x) * 4 + 3]! > 8) {
+        sum += x;
+        n++;
+      }
+    }
+  }
+  return n > 0 ? sum / n : box.x + box.w / 2;
+}
+
+/**
+ * Shared registration for the frames of one clip: every frame lands on a
+ * common foot baseline (bottom of alpha) and a common foot-centroid X, on one
+ * canvas sized to hold them all. Replaces bbox centring, which shifted the
+ * body sideways whenever a pose reached out.
+ *
+ * The canvas height equals the tallest frame's content height, so the frame
+ * height IS the clip's body height — that is what cross-clip height matching
+ * scales against.
+ */
+export function registerCells(cells: RawImage[]): RawImage[] {
+  const boxes = cells.map(contentBox);
+  const feet = cells.map((cell, i) => {
+    const b = boxes[i];
+    return b ? footCentroidX(cell, b) : 0;
+  });
+
+  let maxLeft = 1;
+  let maxRight = 1;
+  let maxH = 1;
+  cells.forEach((_, i) => {
+    const b = boxes[i];
+    if (!b) return;
+    maxLeft = Math.max(maxLeft, feet[i]! - b.x);
+    maxRight = Math.max(maxRight, b.x + b.w - feet[i]!);
+    maxH = Math.max(maxH, b.h);
+  });
+
+  const anchorX = Math.ceil(maxLeft);
+  const width = Math.max(1, anchorX + Math.ceil(maxRight));
+  const height = Math.max(1, maxH);
+
+  return cells.map((cell, i) => {
+    const b = boxes[i];
+    const out = Buffer.alloc(width * height * 4);
+    if (b) {
+      const dx = Math.max(0, Math.min(width - b.w, Math.round(anchorX - (feet[i]! - b.x))));
+      const dy = height - b.h; // shared foot baseline
+      for (let y = 0; y < b.h; y++) {
+        const src = ((b.y + y) * cell.width + b.x) * 4;
+        cell.data.copy(out, ((dy + y) * width + dx) * 4, src, src + b.w * 4);
+      }
+    }
+    return { data: out, width, height };
+  });
+}
+
+/**
+ * Targeted repair (§C4): erase one frame's region of a raw sheet and paste a
+ * replacement pose into it, bottom-aligned and horizontally centred. Patching
+ * the RAW keeps it the single source of truth, so re-slicing, resampling and
+ * manual editing all keep working afterwards.
+ */
+export function replaceRegion(target: RawImage, box: CellBox, cell: RawImage): RawImage {
+  const out = Buffer.from(target.data);
+  const x0 = Math.max(0, Math.min(box.x, target.width));
+  const y0 = Math.max(0, Math.min(box.y, target.height));
+  const x1 = Math.max(x0, Math.min(box.x + box.w, target.width));
+  const y1 = Math.max(y0, Math.min(box.y + box.h, target.height));
+
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) out[(y * target.width + x) * 4 + 3] = 0;
+  }
+
+  const dx = x0 + Math.floor((x1 - x0 - cell.width) / 2);
+  const dy = y1 - cell.height; // share the frame's ground line
+  for (let y = 0; y < cell.height; y++) {
+    const ty = dy + y;
+    if (ty < 0 || ty >= target.height) continue;
+    for (let x = 0; x < cell.width; x++) {
+      const tx = dx + x;
+      if (tx < 0 || tx >= target.width) continue;
+      const si = (y * cell.width + x) * 4;
+      if (cell.data[si + 3]! === 0) continue;
+      const ti = (ty * target.width + tx) * 4;
+      out[ti] = cell.data[si]!;
+      out[ti + 1] = cell.data[si + 1]!;
+      out[ti + 2] = cell.data[si + 2]!;
+      out[ti + 3] = cell.data[si + 3]!;
+    }
+  }
+  return { data: out, width: target.width, height: target.height };
+}
+
 export async function resizeCell(
   cell: RawImage,
   targetW: number,
@@ -592,6 +689,26 @@ export async function resizeCell(
 }
 
 /** Pack equally-sized cells into a grid image with the given column count. */
+/**
+ * Locally rendered clips draw every frame as an INDEPENDENT image, so the
+ * figure's scale drifts frame to frame and a walk pulses. Scale each cell to
+ * the MEDIAN content height (aspect kept, nearest-neighbor) before
+ * registration. This is scale equalization only — bbox recentering stays
+ * banned (a reaching limb must never drag the body sideways).
+ */
+export async function equalizeCellHeights(cells: RawImage[]): Promise<RawImage[]> {
+  if (cells.length < 2) return cells;
+  const heights = [...cells.map((c) => c.height)].sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)]!;
+  return Promise.all(
+    cells.map((c) => {
+      if (Math.abs(c.height - median) <= 1) return c;
+      const f = median / c.height;
+      return resizeCell(c, Math.max(1, Math.round(c.width * f)), median, 'nearest');
+    }),
+  );
+}
+
 export function packCells(cells: RawImage[], cols: number): RawImage {
   const cw = cells[0]!.width;
   const ch = cells[0]!.height;

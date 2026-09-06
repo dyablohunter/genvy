@@ -149,24 +149,13 @@ describe('imagePipeline', () => {
     expect(boxes).toHaveLength(6);
   });
 
-  it('detects green cell borders and returns their interiors', async () => {
-    // Two green ring "cells" (100x140, 4px border) with a red blob inside each.
-    const bar = (w: number, h: number) =>
-      sharp({ create: { width: w, height: h, channels: 4, background: { r: 0, g: 255, b: 0, alpha: 1 } } })
-        .png()
-        .toBuffer();
-    const ring = async (w: number, h: number, t: number) =>
-      sharp({ create: { width: w, height: h, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
-        .composite([
-          { input: await bar(w, t), left: 0, top: 0 },
-          { input: await bar(w, t), left: 0, top: h - t },
-          { input: await bar(t, h), left: 0, top: 0 },
-          { input: await bar(t, h), left: w - t, top: 0 },
-        ])
-        .png()
-        .toBuffer();
+  it('detects GREEN sprites as sprites (the border-cell heuristic is gone)', async () => {
+    // Regression: pure-green subjects (a green phoenix) used to trip the old
+    // green-cell-border detector into dozens of bogus boxes, and the border
+    // stripper punched holes in them. Two green blobs must yield exactly two
+    // boxes, with every green pixel surviving.
     const blob = await sharp({
-      create: { width: 40, height: 60, channels: 4, background: { r: 220, g: 40, b: 40, alpha: 1 } },
+      create: { width: 60, height: 90, channels: 4, background: { r: 20, g: 230, b: 40, alpha: 1 } },
     })
       .png()
       .toBuffer();
@@ -174,25 +163,18 @@ describe('imagePipeline', () => {
       create: { width: 300, height: 200, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
     })
       .composite([
-        { input: await ring(100, 140, 4), left: 20, top: 20 },
-        { input: await ring(100, 140, 4), left: 160, top: 30 },
-        { input: blob, left: 50, top: 60 },
-        { input: blob, left: 190, top: 70 },
+        { input: blob, left: 30, top: 40 },
+        { input: blob, left: 180, top: 50 },
       ])
       .png()
       .toBuffer();
 
     const img = await pipe.loadRaw(png);
-    const cells = pipe.detectGreenCells(img);
-    expect(cells).toHaveLength(2);
-    // Interiors sit inside the rings (past the 4px border).
-    expect(cells[0]!.x).toBeGreaterThanOrEqual(24);
-    expect(cells[0]!.x + cells[0]!.w).toBeLessThanOrEqual(116);
-    expect(cells[1]!.x).toBeGreaterThanOrEqual(164);
-    // Stripping removes the rings entirely.
-    const stripped = pipe.stripBorderColor(img);
-    const remaining = pipe.detectGreenCells(stripped);
-    expect(remaining).toHaveLength(0);
+    const boxes = pipe.detectSpriteCells(img);
+    expect(boxes).toHaveLength(2);
+    let opaque = 0;
+    for (let i = 3; i < img.data.length; i += 4) if (img.data[i]! > 8) opaque++;
+    expect(opaque).toBe(60 * 90 * 2); // nothing keyed the green away
   });
 
   it('dedupes identical cells via hashing', async () => {

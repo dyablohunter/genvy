@@ -120,6 +120,44 @@ export function textArea(value = '', placeholder = ''): HTMLTextAreaElement {
   return el;
 }
 
+/**
+ * Grow a textarea to fit its content instead of scrolling inside a fixed box:
+ * lore and image prompts vary from one line to a paragraph, and a scrollbar
+ * inside a 64px window hides most of what the AI wrote.
+ *
+ * Height is capped so one long field cannot push the rest of a panel off
+ * screen. Re-measure with `autoGrow.refresh(el)` after setting `.value` in
+ * code — assigning a value fires no input event.
+ */
+export function autoGrow(el: HTMLTextAreaElement, maxPx = 420): HTMLTextAreaElement {
+  const fit = () => {
+    el.style.height = 'auto'; // shrink first, or it can only ever grow
+    el.style.height = `${Math.min(el.scrollHeight + 2, maxPx)}px`;
+    el.style.overflowY = el.scrollHeight + 2 > maxPx ? 'auto' : 'hidden';
+  };
+  el.addEventListener('input', fit);
+  // The element is not in the DOM yet at construction time, so scrollHeight is
+  // 0; measure once a frame later and whenever the window changes width.
+  requestAnimationFrame(fit);
+  window.addEventListener('resize', fit);
+  autoGrowFit.set(el, fit);
+  return el;
+}
+
+const autoGrowFit = new WeakMap<HTMLTextAreaElement, () => void>();
+
+/**
+ * Re-measure an auto-growing textarea after its value changed in code. Also
+ * re-measures next frame, so a field filled in the same tick it becomes
+ * visible (scrollHeight is 0 while display:none) still sizes correctly.
+ */
+autoGrow.refresh = (el: HTMLTextAreaElement) => {
+  const fit = autoGrowFit.get(el);
+  if (!fit) return;
+  fit();
+  requestAnimationFrame(fit);
+};
+
 export function numberInput(value: number, min?: number, max?: number): HTMLInputElement {
   const el = document.createElement('input');
   el.type = 'number';

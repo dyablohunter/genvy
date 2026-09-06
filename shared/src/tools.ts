@@ -8,11 +8,11 @@ export interface ToolDef {
 }
 
 export const TOOLS: ToolDef[] = [
-  { id: 'sprite', name: 'Sprite Forge', icon: '🧬', blurb: 'AI characters & spritesheets', ready: true },
+  { id: 'sprite', name: 'Sprite Forge', icon: '🧬', blurb: 'AI sprites & spritesheets', ready: true },
   { id: 'world', name: 'World Maker', icon: '🗺️', blurb: 'Tilesets & level painting', ready: true },
   { id: 'npc', name: 'NPC Designer', icon: '🧑‍🚀', blurb: 'Personalities, schedules, dialogue', ready: false },
   { id: 'enemy', name: 'Enemy Forge', icon: '👾', blurb: 'Behaviors, stats, drop tables', ready: false },
-  { id: 'item', name: 'Item Smith', icon: '⚗️', blurb: 'Icons, effects, rarity', ready: false },
+  { id: 'item', name: 'Item Smith', icon: '⚒️', blurb: 'Icons, effects, rarity', ready: false },
   { id: 'animation', name: 'Animation Studio', icon: '🎞️', blurb: 'Timelines, onion-skin, clips', ready: false },
   { id: 'particle', name: 'FX Lab', icon: '✨', blurb: 'Particle emitters & presets', ready: false },
   { id: 'sound', name: 'Sound Designer', icon: '🔊', blurb: 'Retro sfx synthesis', ready: false },

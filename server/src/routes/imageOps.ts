@@ -7,9 +7,16 @@ import type {
   AutoSliceRequest,
   ExtractTilesRequest,
   DownscaleRequest,
+  FlipRequest,
+  AnchorGateRequest,
 } from '@genvy/shared';
+import { getStylePreset } from '@genvy/shared';
 import { Library, LibraryError } from '../services/library.js';
 import * as pipe from '../services/imagePipeline.js';
+import { gateTiles, wrapContinuity } from '../services/tileGate.js';
+import { makeSeamlessTile } from '../services/seamless.js';
+import { applyStylePost } from '../services/stylePost.js';
+import { runAnchorGate } from '../services/anchorGate.js';
 
 export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
   const loadSource = async (assetId: string, sourceFile: string) => {
@@ -54,6 +61,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       const th = Math.max(1, Math.round(h0 * scale));
       cells = await Promise.all(cells.map((c) => pipe.resizeCell(c, tw, th, 'nearest')));
     }
+    cells = applyStylePost(cells, getStylePreset(b.styleId));
 
     const packed = pipe.packCells(cells, b.cols);
     const png = await pipe.toPng(packed);
@@ -77,12 +85,10 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       const b = req.body ?? ({} as { assetId: string; sourceFile: string });
       if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
       let raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
-      const greenCells = pipe.detectGreenCells(raw);
-      raw = pipe.stripBorderColor(raw);
       if (!pipe.hasTransparency(raw)) {
         raw = pipe.removeBackground(raw, Math.min(Math.max(b.tolerance ?? 24, 0), 64), 'both');
       }
-      return { boxes: greenCells.length >= 2 ? greenCells : pipe.detectSpriteCells(raw) };
+      return { boxes: pipe.detectSpriteCells(raw) };
     },
   );
 
@@ -98,6 +104,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       box: pipe.CellBox;
       outName: string;
       variantIndex?: number;
+      pad?: number;
     };
   }>('/api/image/crop', async (req) => {
     const b = req.body ?? ({} as { assetId: string; sourceFile: string; box: pipe.CellBox; outName: string });
@@ -105,9 +112,23 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       throw new LibraryError(400, 'assetId, sourceFile, box and a valid outName required');
     }
     let raw = await pipe.loadRaw(await loadSource(b.sourceAssetId ?? b.assetId, b.sourceFile));
-    raw = pipe.stripBorderColor(raw);
     if (!pipe.hasTransparency(raw)) raw = pipe.removeBackground(raw, 24, 'both');
-    const cell = pipe.extractBoxes(raw, [b.box])[0]!;
+    let box = b.box;
+    if (b.pad && b.pad > 0) {
+      // Grow the box by a fraction of its longest side, clamped to the source —
+      // content cut off at the source edge stays edge-touching so the anchor
+      // gate can detect it.
+      const p = Math.round(Math.max(box.w, box.h) * Math.min(b.pad, 0.5));
+      const x = Math.max(0, box.x - p);
+      const y = Math.max(0, box.y - p);
+      box = {
+        x,
+        y,
+        w: Math.min(raw.width - x, box.w + (box.x - x) + p),
+        h: Math.min(raw.height - y, box.h + (box.y - y) + p),
+      };
+    }
+    const cell = pipe.extractBoxes(raw, [box])[0]!;
     const png = await pipe.toPng(cell);
     const rel = await save(b.assetId, b.outName, png);
     // Record the parent session so recovery can group workspaces under it.
@@ -121,6 +142,52 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     return { fileRef: { path: rel, width: cell.width, height: cell.height } };
   });
 
+  /** Horizontal mirror — the east anchor is a free, computed flip of west. */
+  app.post<{ Body: FlipRequest }>('/api/image/flip', async (req) => {
+    const b = req.body ?? ({} as FlipRequest);
+    if (!b.assetId || !b.sourceFile || !SAFE_OUT.test(b.outName ?? '')) {
+      throw new LibraryError(400, 'assetId, sourceFile and a valid outName required');
+    }
+    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    // mirror:false is a straight copy — re-filing an anchor under another view.
+    let out = b.mirror === false ? raw : pipe.flipHorizontal(raw);
+    let pivot = b.pivot;
+    if (b.mirror !== false && pivot) pivot = { x: 1 - pivot.x, y: pivot.y };
+    if (b.rotate) {
+      if (pivot) {
+        const turned = await pipe.rotateAboutPivot(out, b.rotate, pivot);
+        out = turned.img;
+        pivot = turned.pivot;
+      } else {
+        out = await pipe.rotateImage(out, b.rotate);
+      }
+    }
+    const rel = await save(b.assetId, b.outName, await pipe.toPng(out));
+    // Frame boxes travel with the image, so a derived sheet stays sliceable.
+    const boxes = b.boxes?.map((box) =>
+      pipe.transformBox(box, raw.width, raw.height, {
+        mirror: b.mirror !== false,
+        rotate: b.rotate,
+      }),
+    );
+    return {
+      fileRef: { path: rel, width: out.width, height: out.height },
+      ...(boxes ? { boxes } : {}),
+      ...(pivot ? { pivot } : {}),
+    };
+  });
+
+  /**
+   * Anchor lock gate (Sprite Pipeline v2 §C2.2, BLOCKING) — deterministic
+   * checks on a picked neutral anchor; no writes, no credits.
+   */
+  app.post<{ Body: AnchorGateRequest }>('/api/image/anchor-gate', async (req) => {
+    const b = req.body ?? ({} as AnchorGateRequest);
+    if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
+    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    return runAnchorGate(raw);
+  });
+
   /**
    * Sprite-aware slicing: detects each pose from alpha instead of assuming a
    * grid, so irregular AI layouts still produce clean, aligned frames.
@@ -130,9 +197,6 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
     const outName = b.outName && SAFE_OUT.test(b.outName) ? b.outName : 'sheet.png';
     let raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
-    // Green cell borders (when the model drew them) are the most reliable cuts.
-    const greenCells = pipe.detectGreenCells(raw);
-    raw = pipe.stripBorderColor(raw);
     // Solid-background sources (uploads) get keyed first so alpha detection works.
     if (!pipe.hasTransparency(raw)) {
       raw = pipe.removeBackground(raw, Math.min(Math.max(b.tolerance ?? 24, 0), 64), 'both');
@@ -154,8 +218,6 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       groups = b.groups.filter((g) => g.length > 0).map((g) => g.map(clamp));
     } else if (b.boxes && b.boxes.length > 0) {
       groups = b.boxes.map((box) => [clamp(box)]);
-    } else if (greenCells.length >= 2) {
-      groups = greenCells.map((box) => [box]);
     } else {
       groups = pipe.detectSpriteCells(raw, { expected: b.expectedFrames }).map((box) => [box]);
     }
@@ -163,18 +225,30 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       throw new LibraryError(422, 'No sprites detected — try REMOVE BACKGROUND first or adjust the image');
     }
     const boxes = groups.map((g) => pipe.unionBox(g));
-    let cells = pipe.trimAndCenter(pipe.extractGroups(raw, groups));
+    // Shared foot baseline + foot-centroid X across the clip's frames.
+    let cells = pipe.registerCells(pipe.extractGroups(raw, groups));
 
-    // targetFrameSize 0 = keep the native (original) resolution.
+    // bodyHeightPx wins when given (cross-clip height matching): scale so the
+    // body measures the same in every clip of the character. Otherwise
+    // targetFrameSize caps the longest side; 0 = keep native resolution.
     const target = b.targetFrameSize ?? 48;
-    if (target > 0) {
-      const w0 = cells[0]!.width;
-      const h0 = cells[0]!.height;
-      const scale = target / Math.max(w0, h0);
+    const w0 = cells[0]!.width;
+    // Registration crops to content, so the frame height IS the body height.
+    const h0 = cells[0]!.height;
+    const scale =
+      b.bodyHeightPx && b.bodyHeightPx > 0
+        ? b.bodyHeightPx / h0
+        : target > 0
+          ? target / Math.max(w0, h0)
+          : 1;
+    if (Math.abs(scale - 1) > 0.001) {
       const tw = Math.max(1, Math.round(w0 * scale));
       const th = Math.max(1, Math.round(h0 * scale));
       cells = await Promise.all(cells.map((c) => pipe.resizeCell(c, tw, th, 'nearest')));
     }
+    // Style postSteps run per clip AFTER the downscale: the nearest resize put
+    // the pixels on the final grid, these steps make them read as the style.
+    cells = applyStylePost(cells, getStylePreset(b.styleId));
     const tw = cells[0]!.width;
     const th = cells[0]!.height;
 
@@ -192,6 +266,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       columns,
       boxes,
       thumbnail: thumbRel,
+      bodyHeight: th,
     };
   });
 
@@ -202,6 +277,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
   app.post<{
     Body: {
       assetId: string;
+      styleId?: string;
       parts: {
         file: string;
         frameWidth: number;
@@ -231,9 +307,16 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
           : cells;
       partCells.push(selected.length > 0 ? selected : cells);
     }
-    // Normalize every frame across all animations to one shared cell size.
+    // Normalize every frame across ALL animations to one cell size, sharing a
+    // ground line and a foot-centroid X (§C5). registerCells, not
+    // trimAndCenter: bbox-centering re-introduces exactly the horizontal
+    // jitter registration removed — a reaching arm drags the body sideways —
+    // and this sheet is what gets saved and exported.
     let all = partCells.flat();
-    all = pipe.trimAndCenter(all);
+    all = pipe.registerCells(all);
+    // One shared palette across the WHOLE master sheet, so clips can't drift
+    // in color from each other.
+    all = applyStylePost(all, getStylePreset(b.styleId));
     const cw = all[0]!.width;
     const ch = all[0]!.height;
     // Row widths come from the SELECTED frames, not the raw strip length.
@@ -265,6 +348,92 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       columns,
       ranges,
       thumbnail: thumbRel,
+    };
+  });
+
+  /**
+   * Drop one tile from a packed tileset and repack the rest, preserving
+   * order. The caller must remap its world data with the returned mapping:
+   * a removed tile's cells become -1 and everything after it shifts down —
+   * doing that silently would repaint a level with the wrong art.
+   */
+  app.post<{
+    Body: { assetId: string; sourceFile: string; tileWidth: number; tileHeight: number; index: number };
+  }>('/api/image/remove-tile', async (req) => {
+    const b = req.body ?? ({} as { assetId: string; sourceFile: string; tileWidth: number; tileHeight: number; index: number });
+    if (!b.assetId || !b.sourceFile || !b.tileWidth || !b.tileHeight || b.index === undefined) {
+      throw new LibraryError(400, 'assetId, sourceFile, tileWidth, tileHeight and index required');
+    }
+    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    const cols = Math.max(1, Math.floor(raw.width / b.tileWidth));
+    const rows = Math.max(1, Math.floor(raw.height / b.tileHeight));
+    const cells = pipe.cutCells(raw, { cols, rows });
+    if (b.index < 0 || b.index >= cells.length) {
+      throw new LibraryError(400, `index ${b.index} is outside the ${cells.length}-tile set`);
+    }
+    const kept = cells.filter((_, i) => i !== b.index);
+    if (kept.length === 0) throw new LibraryError(400, 'A tileset needs at least one tile');
+
+    // old index -> new index (-1 for the removed tile).
+    const indexMap = cells.map((_, i) => (i === b.index ? -1 : i < b.index ? i : i - 1));
+    const packed = pipe.packCells(kept, Math.min(kept.length, 8));
+    const png = await pipe.toPng(packed);
+    const rel = await save(b.assetId, 'tileset.png', png);
+    const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
+    return {
+      tileset: { path: rel, width: packed.width, height: packed.height },
+      tileWidth: b.tileWidth,
+      tileHeight: b.tileHeight,
+      tileCount: kept.length,
+      indexMap,
+      thumbnail: thumbRel,
+    };
+  });
+
+  /**
+   * Make chosen tiles tile: offset each by half and heal the exposed cross
+   * seam (services/seamless.ts). Deterministic and free — no model can be
+   * trusted to draw a wrapping texture, so we build one from what it drew.
+   */
+  app.post<{
+    Body: {
+      assetId: string;
+      sourceFile: string;
+      tileWidth: number;
+      tileHeight: number;
+      index: number;
+      mode?: 'offset' | 'h' | 'v' | 'both';
+      band?: number;
+    };
+  }>('/api/image/seamless-variant', async (req) => {
+    const b = req.body ?? ({} as { assetId: string; sourceFile: string; tileWidth: number; tileHeight: number; index: number });
+    if (!b.assetId || !b.sourceFile || !b.tileWidth || !b.tileHeight || b.index === undefined) {
+      throw new LibraryError(400, 'assetId, sourceFile, tileWidth, tileHeight and index required');
+    }
+    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    const cols = Math.max(1, Math.floor(raw.width / b.tileWidth));
+    const rows = Math.max(1, Math.floor(raw.height / b.tileHeight));
+    const cells = pipe.cutCells(raw, { cols, rows });
+    const source = cells[b.index];
+    if (!source) throw new LibraryError(400, `index ${b.index} is outside the ${cells.length}-tile set`);
+
+    // APPEND the wrapping version rather than overwriting the original: the
+    // source tile keeps its look for props and edges, and any map already
+    // painted with it stays exactly as it was.
+    const variant = makeSeamlessTile(source, b.mode ?? 'offset', b.band ? { band: b.band } : {});
+    const next = [...cells, variant];
+    const packed = pipe.packCells(next, Math.min(next.length, 8));
+    const png = await pipe.toPng(packed);
+    const rel = await save(b.assetId, 'tileset.png', png);
+    const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
+    return {
+      tileset: { path: rel, width: packed.width, height: packed.height },
+      thumbnail: thumbRel,
+      newIndex: next.length - 1,
+      tileCount: next.length,
+      /** Wrap continuity 0-100 before and after, so the UI can prove it helped. */
+      before: Math.round(wrapContinuity(source) * 100),
+      after: Math.round(wrapContinuity(variant) * 100),
     };
   });
 
@@ -300,6 +469,25 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     const png = await pipe.toPng(packed);
     const rel = await save(b.assetId, 'tileset.png', png);
     const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
+    /**
+     * World Maker v2 §W1: score the cut set the way animations are scored —
+     * seams, palette cohesion, fill, drawn grid lines, duplicates. Advisory
+     * (the tileset is saved either way); the UI surfaces it and the retry
+     * loop can feed `hints` back into the next attempt.
+     */
+    let gate: Awaited<ReturnType<typeof gateTiles>> | undefined;
+    try {
+      gate = await gateTiles(cells, {
+        expectedTiles: b.cols * b.rows,
+        ...(b.seamlessIndexes ? { seamlessIndexes: b.seamlessIndexes } : {}),
+      });
+      req.log.info(
+        { score: gate.score, pass: gate.pass, failed: gate.failedTiles, hints: gate.hints },
+        'tile gate report',
+      );
+    } catch (err) {
+      req.log.warn({ err }, 'tile gate failed — returning the tileset ungated');
+    }
     return {
       tileset: { path: rel, width: packed.width, height: packed.height },
       tileWidth: size,
@@ -307,6 +495,16 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       tileCount: cells.length,
       indexMap,
       thumbnail: thumbRel,
+      ...(gate
+        ? {
+            gate: {
+              score: gate.score,
+              pass: gate.pass,
+              failedTiles: gate.failedTiles,
+              hints: gate.hints,
+            },
+          }
+        : {}),
     };
   });
 

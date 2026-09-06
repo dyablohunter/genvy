@@ -27,6 +27,11 @@ export class Library {
     return path.join(this.rootDir, 'files');
   }
 
+  /** Engine-ready exports (sheet + manifests), one dir per export. */
+  get exportsDir() {
+    return path.join(this.rootDir, 'exports');
+  }
+
   private assetPath(type: AssetType, id: string) {
     return path.join(this.rootDir, 'assets', type, `${id}.json`);
   }
@@ -38,6 +43,7 @@ export class Library {
   async init() {
     await fs.mkdir(path.join(this.rootDir, 'assets'), { recursive: true });
     await fs.mkdir(this.filesDir, { recursive: true });
+    await fs.mkdir(this.exportsDir, { recursive: true });
     try {
       await fs.access(this.indexPath());
     } catch {
@@ -280,6 +286,7 @@ export class Library {
       source?: { sessionId: string; variantIndex: number | null };
       sheet?: AssetIndexEntry;
       character?: AssetIndexEntry;
+      subject?: string;
     }[]
   > {
     const index = await this.readIndex();
@@ -314,7 +321,20 @@ export class Library {
       if (sheet) {
         character = (await this.referrers(dir)).find((e) => e.type === 'character');
       }
-      out.push({ id: dir, files, updatedAt: stat.mtime.toISOString(), source, sheet, character });
+      // What KIND of thing this sprite is (character/weapon/prop/...), so the
+      // inventory can label it without another fetch.
+      let subject: string | undefined;
+      if (files.includes('concept.json')) {
+        try {
+          const concept = JSON.parse(
+            await fs.readFile(path.join(this.filesDir, dir, 'concept.json'), 'utf8'),
+          );
+          if (typeof concept.subject === 'string') subject = concept.subject;
+        } catch {
+          /* corrupt concept — no label */
+        }
+      }
+      out.push({ id: dir, files, updatedAt: stat.mtime.toISOString(), source, sheet, character, subject });
     }
     return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }

@@ -1,0 +1,80 @@
+{
+  "meta": {
+    "id": "anchor-generate",
+    "description": "Z-Image Turbo txt2img (6B, 8 steps, cfg 1). Transcribed from Comfy-Org/workflow_templates image_z_image_turbo.json (2026-09-05); not yet run on a GPU here. Turbo runs cfg 1 with a zeroed negative — negative prompts have NO effect; everything must be said positively.",
+    "models": {
+      "diffusion": "z_image_turbo_bf16.safetensors (diffusion_models/; GGUF quantizations fit 6-8GB)",
+      "textEncoder": "qwen_3_4b.safetensors (text_encoders/)",
+      "vae": "ae.safetensors (vae/)"
+    }
+  },
+  "bindings": {
+    "positive": ["27", "inputs", "text"],
+    "seed": ["3", "inputs", "seed"],
+    "steps": ["3", "inputs", "steps"],
+    "cfg": ["3", "inputs", "cfg"],
+    "width": ["13", "inputs", "width"],
+    "height": ["13", "inputs", "height"],
+    "checkpointName": ["28", "inputs", "unet_name"],
+    "lora": {
+      "checkpoint": "28",
+      "modelSource": ["28", 0],
+      "clipSource": ["30", 0],
+      "modelConsumers": [["11", "inputs", "model"]],
+      "clipConsumers": [["27", "inputs", "clip"]]
+    }
+  },
+  "nodes": {
+    "28": {
+      "class_type": "UNETLoader",
+      "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" }
+    },
+    "30": {
+      "class_type": "CLIPLoader",
+      "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "lumina2", "device": "default" }
+    },
+    "29": {
+      "class_type": "VAELoader",
+      "inputs": { "vae_name": "ae.safetensors" }
+    },
+    "27": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "text": "", "clip": ["30", 0] }
+    },
+    "33": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": { "conditioning": ["27", 0] }
+    },
+    "13": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 }
+    },
+    "11": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": { "shift": 3, "model": ["28", 0] }
+    },
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "denoise": 1.0,
+        "model": ["11", 0],
+        "positive": ["27", 0],
+        "negative": ["33", 0],
+        "latent_image": ["13", 0]
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["3", 0], "vae": ["29", 0] }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": { "filename_prefix": "genvy", "images": ["8", 0] }
+    }
+  }
+}

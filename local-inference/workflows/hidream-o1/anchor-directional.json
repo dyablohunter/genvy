@@ -1,0 +1,228 @@
+{
+  "meta": {
+    "id": "anchor-directional",
+    "description": "HiDream-O1 dev instruction edit: the anchor goes in as a reference image (HiDreamO1ReferenceImages) and the prompt asks for the new facing \u2014 native subject-driven editing, no IP-Adapter needed. Transcribed from Comfy-Org image_hidream_o1_dev.json edit mode (2026-09-05); node inputs validated against live ComfyUI source 2026-09-05: the reference is the DOTTED autogrow input 'images.image_1' (dynamic_paths splits on dots), and O1 is trained at ~4MP \u2014 renders below ~2MP with references go off-distribution and can come back blank.",
+    "models": {
+      "checkpoint": "hidream_o1_image_dev_fp8_scaled.safetensors (checkpoints/, ~10GB fp8)",
+      "textEncoder": "gemma4_e4b_it_fp8_scaled.safetensors (text_encoders/)"
+    }
+  },
+  "bindings": {
+    "positive": [
+      "110",
+      "inputs",
+      "text"
+    ],
+    "negative": [
+      "188",
+      "inputs",
+      "text"
+    ],
+    "seed": [
+      "108",
+      "inputs",
+      "noise_seed"
+    ],
+    "cfg": [
+      "108",
+      "inputs",
+      "cfg"
+    ],
+    "steps": [
+      "112",
+      "inputs",
+      "steps"
+    ],
+    "width": [
+      "156",
+      "inputs",
+      "width"
+    ],
+    "height": [
+      "156",
+      "inputs",
+      "height"
+    ],
+    "checkpointName": [
+      "6",
+      "inputs",
+      "ckpt_name"
+    ],
+    "identityImage": [
+      "213",
+      "inputs",
+      "image"
+    ],
+    "lora": {
+      "checkpoint": "6",
+      "modelConsumers": [
+        [
+          "124",
+          "inputs",
+          "model"
+        ],
+        [
+          "112",
+          "inputs",
+          "model"
+        ]
+      ],
+      "clipConsumers": [
+        [
+          "110",
+          "inputs",
+          "clip"
+        ],
+        [
+          "188",
+          "inputs",
+          "clip"
+        ]
+      ]
+    }
+  },
+  "nodes": {
+    "6": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "hidream_o1_image_dev_fp8_scaled.safetensors"
+      }
+    },
+    "124": {
+      "class_type": "ModelNoiseScale",
+      "inputs": {
+        "noise_scale": 7.6,
+        "model": [
+          "6",
+          0
+        ]
+      }
+    },
+    "213": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "identity.png"
+      }
+    },
+    "110": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "6",
+          1
+        ]
+      }
+    },
+    "188": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "6",
+          1
+        ]
+      }
+    },
+    "104": {
+      "class_type": "HiDreamO1ReferenceImages",
+      "inputs": {
+        "positive": [
+          "110",
+          0
+        ],
+        "negative": [
+          "188",
+          0
+        ],
+        "images.image_1": [
+          "213",
+          0
+        ]
+      }
+    },
+    "125": {
+      "class_type": "SamplerLCM",
+      "inputs": {
+        "s_noise": 1,
+        "s_noise_end": 1,
+        "noise_clip_std": 2.5
+      }
+    },
+    "112": {
+      "class_type": "BasicScheduler",
+      "inputs": {
+        "scheduler": "normal",
+        "steps": 28,
+        "denoise": 1.0,
+        "model": [
+          "124",
+          0
+        ]
+      }
+    },
+    "156": {
+      "class_type": "EmptyHiDreamO1LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "108": {
+      "class_type": "SamplerCustom",
+      "inputs": {
+        "add_noise": true,
+        "noise_seed": 0,
+        "cfg": 1,
+        "model": [
+          "124",
+          0
+        ],
+        "positive": [
+          "104",
+          0
+        ],
+        "negative": [
+          "104",
+          1
+        ],
+        "sampler": [
+          "125",
+          0
+        ],
+        "sigmas": [
+          "112",
+          0
+        ],
+        "latent_image": [
+          "156",
+          0
+        ]
+      }
+    },
+    "105": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "108",
+          0
+        ],
+        "vae": [
+          "6",
+          2
+        ]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "genvy",
+        "images": [
+          "105",
+          0
+        ]
+      }
+    }
+  }
+}

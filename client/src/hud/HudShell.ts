@@ -5,12 +5,24 @@ import {
   GenvyButton,
   forgeStatus,
   progressBar,
+  escapeHtml,
 } from './components.js';
 import { slideIn, slideOut, glowPop } from './anim.js';
 import { UISound } from './UISound.js';
 import { collection } from '../state/collection.js';
+import { expectedDuration, recordDuration } from './progress.js';
 import { api, ApiError } from '../api/client.js';
 import type { AssetIndexEntry } from '@genvy/shared';
+import { getSubject } from '@genvy/shared';
+
+/** The subject label of a forge session ("CHARACTER", "WEAPON", ...), if known. */
+function subjectLabel(
+  session: { subject?: string } | null,
+  children: { subject?: string }[],
+): string | null {
+  const id = session?.subject ?? children.find((c) => c.subject)?.subject;
+  return id ? getSubject(id).label.toUpperCase() : null;
+}
 
 /**
  * Character-family assets are reached through their session card's V-squares,
@@ -18,7 +30,33 @@ import type { AssetIndexEntry } from '@genvy/shared';
  */
 const DRAWER_HIDDEN_TYPES = new Set(['animation', 'spritesheet', 'character']);
 
-export type Dock = 'left' | 'right' | 'bottom';
+export type Dock = 'left' | 'right' | 'bottom' | 'center';
+
+/** Lifecycle of one unit of work inside a busy operation. */
+export type BusyStepState = 'pending' | 'active' | 'done' | 'failed';
+
+/**
+ * Logical creations, not raw index rows: a forged character's V1-V4 versions,
+ * sheets, and animation clips all collapse into ONE asset; standalone types
+ * (tilesets, worlds, ...) count individually.
+ */
+function logicalAssetCount(entries: AssetIndexEntry[]): number {
+  const characterBases = new Set<string>();
+  let others = 0;
+  for (const e of entries) {
+    if (e.type === 'character') {
+      characterBases.add(e.name.replace(/\s+V\d+$/i, '').toLowerCase());
+    } else if (e.type === 'spritesheet') {
+      // "Name V2 — sheet" belongs to the same creation as "Name V2".
+      characterBases.add(
+        e.name.replace(/\s*—\s*sheet$/i, '').replace(/\s+V\d+$/i, '').toLowerCase(),
+      );
+    } else if (e.type !== 'animation') {
+      others++;
+    }
+  }
+  return characterBases.size + others;
+}
 
 /**
  * Permanent DOM layer over the Phaser canvas. Owns the top bar, toast stack,
@@ -32,9 +70,13 @@ class HudShellImpl {
   private topbar!: HTMLElement;
   private forgeCountEl!: HTMLElement;
   private statusEl!: HTMLElement;
+  private spendEl!: HTMLElement;
+  private invBtn!: HTMLElement;
+  private drawerDismiss: ((ev: PointerEvent) => void) | null = null;
   private backBtn!: HTMLElement;
   private drawer: GenvyPanel | null = null;
   private drawerList: HTMLElement | null = null;
+  private keyHintTimer: ReturnType<typeof setTimeout> | null = null;
   onBackToHub: (() => void) | null = null;
   onOpenAsset: ((entry: AssetIndexEntry) => void) | null = null;
   onOpenRecovered: ((id: string) => void) | null = null;
@@ -61,12 +103,26 @@ class HudShellImpl {
       <div class="wipe-btn">WIPE ALL</div>
       <div class="status">SYSTEMS ONLINE</div>
       <div class="spacer"></div>
+      <div class="spend" title="Estimated API spend (from published pricing, not billing)"></div>
+      <div class="spacer"></div>
       <div class="forge-count">ASSETS FORGED: 0</div>
       <div class="back-btn" style="display:none">◄ COMMAND CENTER</div>
+      <div class="inv-btn" title="INVENTORY">▦ INVENTORY</div>
     `;
     this.root.appendChild(this.topbar);
+    this.invBtn = this.topbar.querySelector('.inv-btn')!;
+    this.invBtn.addEventListener('mouseenter', () => UISound.play('hover'));
+    this.invBtn.addEventListener('click', () => {
+      UISound.play('click');
+      this.toggleDrawer();
+    });
     this.statusEl = this.topbar.querySelector('.status')!;
+    this.spendEl = this.topbar.querySelector('.spend')!;
     this.forgeCountEl = this.topbar.querySelector('.forge-count')!;
+    // Estimated spend: refresh after every AI call plus a slow heartbeat.
+    window.addEventListener('genvy-usage-changed', () => void this.refreshSpend());
+    window.setInterval(() => void this.refreshSpend(), 60_000);
+    void this.refreshSpend();
     this.backBtn = this.topbar.querySelector('.back-btn')!;
     this.backBtn.addEventListener('mouseenter', () => UISound.play('hover'));
     this.backBtn.addEventListener('click', () => {
@@ -111,9 +167,10 @@ class HudShellImpl {
     const toasts = document.createElement('div');
     toasts.id = 'genvy-toasts';
     this.root.appendChild(toasts);
+    this.listenForAiWork();
 
     collection.subscribe((entries) => {
-      this.forgeCountEl.textContent = `ASSETS FORGED: ${entries.length}`;
+      this.forgeCountEl.textContent = `ASSETS FORGED: ${logicalAssetCount(entries)}`;
       this.renderDrawer(entries);
     });
   }
@@ -121,6 +178,62 @@ class HudShellImpl {
   setStatus(text: string) {
     this.statusEl.textContent = text;
   }
+
+  /** Center-header readout of per-API spend and reported balances. */
+  async refreshSpend() {
+    const LABELS: Record<string, string> = {
+      deepseek: 'DEEPSEEK',
+      openai: 'GPT-IMG',
+      retrodiffusion: 'RETRO',
+    };
+    try {
+      const u = await api.usage();
+      const active = u.providers.filter((p) => p.calls > 0);
+      const part = (text: string, cls: string) => {
+        const el = document.createElement('span');
+        el.className = cls;
+        el.textContent = text;
+        return el;
+      };
+      const item = (...nodes: HTMLElement[]) => {
+        const el = document.createElement('span');
+        el.className = 'g-spend-item';
+        el.append(...nodes);
+        return el;
+      };
+
+      const items = active.map((p) =>
+        item(
+          part(LABELS[p.id] ?? p.id.toUpperCase(), 'k'),
+          // "~" marks an estimate; providers reporting real figures drop it.
+          part(`${p.exact ? '' : '~'}$${(p.cents / 100).toFixed(3)}`, 'v'),
+          ...(p.balanceCents === undefined
+            ? []
+            : [
+                part('LEFT', 'k'),
+                part(
+                  `$${(p.balanceCents / 100).toFixed(2)}`,
+                  `v bal${p.balanceCents < 100 ? ' low' : ''}`,
+                ),
+              ]),
+        ),
+      );
+      if (active.length > 1) {
+        items.push(item(part('TOTAL', 'k'), part(`~$${(u.totalCents / 100).toFixed(3)}`, 'v total')));
+      }
+      this.spendEl.replaceChildren(...items);
+      this.spendRetries = 0;
+    } catch {
+      // Server not up yet (dev-startup race): retry a few times, briefly,
+      // instead of waiting for the 60s heartbeat.
+      if (this.spendRetries < 5) {
+        this.spendRetries++;
+        setTimeout(() => void this.refreshSpend(), 1500);
+      }
+    }
+  }
+
+  private spendRetries = 0;
 
   setBackVisible(visible: boolean) {
     this.backBtn.style.display = visible ? '' : 'none';
@@ -135,12 +248,22 @@ class HudShellImpl {
     return panel;
   }
 
-  private mountPanel(panel: GenvyPanel, delay = 0) {
+  private mountPanel(panel: GenvyPanel, delay = 0, animate = true) {
     const dock = (panel.dataset.dock ?? 'left') as Dock;
     if (dock === 'left') {
       this.dockLeft.appendChild(panel);
     } else if (dock === 'right') {
       this.dockRight.appendChild(panel);
+    } else if (dock === 'center') {
+      // Centered on the whole viewport: for a step that IS the screen.
+      panel.style.position = 'absolute';
+      panel.style.left = '50%';
+      panel.style.top = '50%';
+      panel.style.bottom = '';
+      panel.style.right = '';
+      panel.style.transform = 'translate(-50%, -50%)';
+      panel.style.width = 'min(560px, 80vw)';
+      this.root.appendChild(panel);
     } else {
       panel.style.position = 'absolute';
       panel.style.bottom = '12px';
@@ -149,14 +272,23 @@ class HudShellImpl {
       panel.style.minWidth = '420px';
       this.root.appendChild(panel);
     }
-    void slideIn(panel, dock === 'bottom' ? 'bottom' : dock, delay);
+    if (animate) void slideIn(panel, dock === 'left' || dock === 'right' ? dock : 'bottom', delay);
   }
 
-  /** Mounts panels with staggered slide-in; replaces the previous layout. */
+  /**
+   * Mounts panels with staggered slide-in; replaces the previous layout.
+   * Panels already hidden are mounted WITHOUT an entrance: a multi-step tool
+   * hands over every step's panel at once, and animating them all would flash
+   * each one for a frame before the current step hides the rest.
+   */
   async setLayout(panels: GenvyPanel[]) {
     await this.clearLayout();
     this.layoutPanels = panels;
-    panels.forEach((panel, i) => this.mountPanel(panel, i * 90));
+    let visibleIndex = 0;
+    for (const panel of panels) {
+      const hidden = panel.style.display === 'none';
+      this.mountPanel(panel, hidden ? 0 : visibleIndex++ * 90, !hidden);
+    }
   }
 
   /** Mount one more panel into the current layout (flows below its dock siblings). */
@@ -165,19 +297,29 @@ class HudShellImpl {
     this.mountPanel(panel);
   }
 
-  /** Show a panel in a specific dock column, re-parenting it if needed. */
+  /** Show a panel in a specific dock, re-parenting and re-styling if needed. */
   showPanel(panel: GenvyPanel, dock: Dock) {
+    // A panel revealed from hidden still deserves its entrance; without this
+    // it would pop in, since the dock/parent may already be correct.
+    const wasHidden = panel.style.display === 'none';
     panel.style.display = '';
     const parent = dock === 'left' ? this.dockLeft : dock === 'right' ? this.dockRight : this.root;
+    if (wasHidden && panel.dataset.dock === dock && panel.parentElement === parent) {
+      void slideIn(panel, dock === 'left' || dock === 'right' ? dock : 'bottom');
+    }
     if (panel.dataset.dock !== dock || panel.parentElement !== parent) {
       panel.dataset.dock = dock;
+      // Clear any placement the previous dock applied before taking the new one.
       panel.style.position = '';
       panel.style.top = '';
       panel.style.left = '';
       panel.style.right = '';
       panel.style.bottom = '';
       panel.style.transform = '';
+      panel.style.width = '';
+      panel.style.minWidth = '';
       parent.appendChild(panel);
+      if (dock === 'center' || dock === 'bottom') this.mountPanel(panel);
     }
     if (!this.layoutPanels.includes(panel)) this.layoutPanels.push(panel);
   }
@@ -192,7 +334,8 @@ class HudShellImpl {
     await Promise.all(
       panels.map((p, i) => {
         const dock = (p.dataset.dock ?? 'left') as Dock;
-        return slideOut(p, dock === 'bottom' ? 'bottom' : dock, i * 50).then(() => p.remove());
+        const from = dock === 'left' || dock === 'right' ? dock : 'bottom';
+        return slideOut(p, from, i * 50).then(() => p.remove());
       }),
     );
   }
@@ -201,22 +344,42 @@ class HudShellImpl {
 
   showDrawer() {
     if (this.drawer) return;
-    this.drawer = this.makePanel('COLLECTION', 'right');
-    this.drawer.id = 'collection-drawer';
-    this.root.appendChild(this.drawer);
+    const drawer = this.makePanel('INVENTORY', 'right');
+    this.drawer = drawer;
+    drawer.id = 'collection-drawer';
+    this.root.appendChild(drawer);
     this.drawerList = document.createElement('div');
     this.drawerList.className = 'g-asset-list';
-    this.drawer.bodyEl.appendChild(this.drawerList);
+    drawer.bodyEl.appendChild(this.drawerList);
     this.renderDrawer(collection.entries);
-    void slideIn(this.drawer, 'right');
+    void slideIn(drawer, 'top');
+    // Clicking anywhere outside the inventory (or its detail flyout) closes it.
+    this.drawerDismiss = (ev: PointerEvent) => {
+      const t = ev.target as Node;
+      if (drawer.contains(t) || this.charDetail?.contains(t) || this.invBtn.contains(t)) return;
+      this.hideDrawer();
+    };
+    setTimeout(() => {
+      if (this.drawerDismiss) window.addEventListener('pointerdown', this.drawerDismiss, true);
+    }, 0);
   }
 
   hideDrawer() {
+    if (this.drawerDismiss) {
+      window.removeEventListener('pointerdown', this.drawerDismiss, true);
+      this.drawerDismiss = null;
+    }
+    this.closeCharDetail();
     if (!this.drawer) return;
     const d = this.drawer;
     this.drawer = null;
     this.drawerList = null;
-    void slideOut(d, 'right').then(() => d.remove());
+    void slideOut(d, 'top').then(() => d.remove());
+  }
+
+  toggleDrawer() {
+    if (this.drawer) this.hideDrawer();
+    else this.showDrawer();
   }
 
   private actionRow: HTMLElement | null = null;
@@ -286,7 +449,7 @@ class HudShellImpl {
     if (groups.length === 0) {
       const hint = document.createElement('div');
       hint.className = 'g-hint';
-      hint.textContent = 'NO CHARACTERS YET. FORGE ONE.';
+      hint.textContent = 'NO SPRITES YET. FORGE ONE.';
       host.appendChild(hint);
       return;
     }
@@ -299,7 +462,8 @@ class HudShellImpl {
       const name = lead?.character?.name?.replace(/\s+V\d+$/i, '') ?? 'UNSAVED';
       const icon = document.createElement('div');
       icon.className = `g-char-icon${lead?.character ? ' saved' : ''}`;
-      icon.title = name;
+      const kind = subjectLabel(group.session, group.children);
+      icon.title = kind ? `${name} · ${kind}` : name;
       if (lead) {
         const img = document.createElement('img');
         img.src = `/library/files/${lead.id}/variant.png`;
@@ -389,7 +553,8 @@ class HudShellImpl {
     const saved = used.filter((c) => c.character || c.sheet);
     const drafts = used.filter((c) => !c.character && !c.sheet);
 
-    // Title row: name left, icon stats right.
+    // Header: the name gets its own full-width line (no more truncation by
+    // the stats), then the kind and each stat stack row by row beneath it.
     const header = document.createElement('div');
     header.className = 'g-session-header';
     const title = document.createElement('div');
@@ -397,13 +562,22 @@ class HudShellImpl {
     title.textContent = saved[0]?.character?.name?.replace(/\s+V\d+$/i, '') ?? 'UNSAVED SESSION';
     const sub = document.createElement('div');
     sub.className = 'g-session-stats';
-    const stat = (icon: string, n: number, tip: string) => {
+    // Rows have horizontal room, so the label rides along instead of hiding
+    // in a tooltip.
+    const stat = (icon: string, n: number, label: string) => {
       const el = document.createElement('span');
       el.className = 'g-stat';
-      el.title = tip;
-      el.innerHTML = `<span class="g-stat-icon">${icon}</span>${n}`;
+      el.innerHTML = `<span class="g-stat-icon">${icon}</span>${label.toUpperCase()}: ${n}`;
       return el;
     };
+    const kind = subjectLabel(session, children);
+    if (kind) {
+      const chip = document.createElement('span');
+      chip.className = 'g-stat';
+      chip.title = 'what kind of sprite this is';
+      chip.textContent = kind;
+      sub.appendChild(chip);
+    }
     sub.append(
       stat('💾', saved.length, 'saved variants'),
       stat('⚒', drafts.length, 'unsaved drafts'),
@@ -430,7 +604,7 @@ class HudShellImpl {
       gridSq.addEventListener('mouseenter', () => UISound.play('hover'));
       gridSq.addEventListener('click', () => {
         UISound.play('click');
-        this.closeCharDetail();
+        this.hideDrawer();
         this.onOpenRecovered?.(session.id);
       });
     }
@@ -457,7 +631,7 @@ class HudShellImpl {
       sq.addEventListener('mouseenter', () => UISound.play('hover'));
       sq.addEventListener('click', () => {
         UISound.play('click');
-        this.closeCharDetail();
+        this.hideDrawer();
         if (!child) {
           if (session) this.onOpenRecovered?.(session.id);
           return;
@@ -473,7 +647,7 @@ class HudShellImpl {
     let armed = false;
     const discard = document.createElement('genvy-button') as GenvyButton;
     discard.setAttribute('variant', 'danger');
-    discard.setAttribute('label', 'DELETE CHARACTER');
+    discard.setAttribute('label', 'DELETE SPRITE');
     discard.onClick(() => {
       if (!armed) {
         armed = true;
@@ -490,7 +664,7 @@ class HudShellImpl {
             await api.deleteOrphan(c.id).catch(() => {});
           }
           if (session) await api.deleteOrphan(session.id).catch(() => {});
-          this.toast('CHARACTER DELETED', 'success');
+          this.toast('SPRITE DELETED', 'success');
         } catch {
           this.toast('DELETE FAILED', 'error');
         }
@@ -515,7 +689,10 @@ class HudShellImpl {
 
     const resume = document.createElement('genvy-button') as GenvyButton;
     resume.setAttribute('label', 'RESUME');
-    resume.onClick(() => this.onOpenRecovered?.(id));
+    resume.onClick(() => {
+      this.hideDrawer();
+      this.onOpenRecovered?.(id);
+    });
     let armed = false;
     const discard = document.createElement('genvy-button') as GenvyButton;
     discard.setAttribute('variant', 'danger');
@@ -562,7 +739,12 @@ class HudShellImpl {
       return b;
     };
 
-    row.appendChild(mk('OPEN', '', () => this.onOpenAsset?.(entry)));
+    row.appendChild(
+      mk('OPEN', '', () => {
+        this.hideDrawer();
+        this.onOpenAsset?.(entry);
+      }),
+    );
     row.appendChild(mk('RENAME', '', () => this.startRename(card, entry)));
     let armed = false;
     const del = mk('DELETE', 'danger', () => {
@@ -636,26 +818,228 @@ class HudShellImpl {
   // ---------- Busy overlay ----------
 
   private busyEl: HTMLElement | null = null;
+  private busyRaf = 0;
+  /** True while the bar is filling against an expected duration. */
+  private busyDeterminate = false;
+  /** Set when an AI request (not its call site) opened the indicator. */
+  private busyAuto: { key: string; startedAt: number } | null = null;
 
-  /** Centered work indicator above the toast area — one at a time. */
-  showBusy(label: string) {
+  /**
+   * Centered work indicator above the toast area — one at a time. With
+   * `expectedMs`, the bar fills to 90% over that duration, then creeps
+   * asymptotically toward 100% until hideBusy() snaps it full.
+   */
+  showBusy(label: string, expectedMs?: number) {
     if (!this.busyEl) {
       this.busyEl = document.createElement('div');
       this.busyEl.id = 'genvy-busy';
       this.root.appendChild(this.busyEl);
     }
-    this.busyEl.innerHTML = '';
+    cancelAnimationFrame(this.busyRaf);
+    this.busyEl.innerHTML = ''; // also clears any step chips from a prior run
     this.busyEl.append(forgeStatus(label), progressBar());
     this.busyEl.style.display = '';
+    this.busyDeterminate = false;
+    if (expectedMs && expectedMs > 0) this.driveBar(expectedMs);
+  }
+
+  /** Fill the bar to 90% over expectedMs, then creep toward 100%. */
+  private driveBar(expectedMs: number, elapsedMs = 0) {
+    const bar = this.busyEl?.querySelector('.g-progress .bar') as HTMLElement | null;
+    if (!bar) return;
+    cancelAnimationFrame(this.busyRaf);
+    this.busyDeterminate = true;
+    bar.style.animation = 'none'; // determinate mode: no scanner sweep
+    bar.style.transform = 'none';
+    bar.style.width = '0%';
+    const start = performance.now() - elapsedMs;
+    const tick = (now: number) => {
+      const t = now - start;
+      const pct =
+        t <= expectedMs
+          ? (t / expectedMs) * 90
+          : 90 + 9.5 * (1 - Math.exp(-(t - expectedMs) / (expectedMs * 0.8)));
+      bar.style.width = `${Math.min(99.5, pct).toFixed(2)}%`;
+      this.busyRaf = requestAnimationFrame(tick);
+    };
+    this.busyRaf = requestAnimationFrame(tick);
+  }
+
+  /**
+   * Every AI generation gets a determinate bar, whatever its call site did:
+   * open the indicator if nothing is showing, or upgrade an indeterminate
+   * scanner in place. See CLAUDE.md "Progress feedback".
+   */
+  private listenForAiWork() {
+    window.addEventListener('genvy-ai-start', (ev) => {
+      const { key, fallbackMs, label } = (ev as CustomEvent<{
+        key: string;
+        fallbackMs: number;
+        label: string;
+      }>).detail;
+      const expected = expectedDuration(key, fallbackMs);
+      const visible = !!this.busyEl && this.busyEl.style.display !== 'none';
+      if (!visible) {
+        this.showBusy(label, expected);
+        this.busyAuto = { key, startedAt: Date.now() };
+      } else if (!this.busyDeterminate) {
+        this.driveBar(expected);
+      }
+    });
+    window.addEventListener('genvy-ai-end', () => {
+      if (!this.busyAuto) return;
+      recordDuration(this.busyAuto.key, Date.now() - this.busyAuto.startedAt);
+      this.busyAuto = null;
+      this.hideBusy();
+    });
+  }
+
+  /** Update the busy label mid-operation without resetting the progress bar. */
+  setBusyLabel(text: string) {
+    const status = this.busyEl?.querySelector('.g-forge-status');
+    if (status) status.textContent = text;
+  }
+
+  /**
+   * Server-truth progress: the bar lives inside the CURRENT step's band —
+   * it jumps to just past the previous step's boundary, then creeps
+   * asymptotically toward this step's boundary while the step runs, so it
+   * always moves but can never claim work that hasn't happened. (The old
+   * static pin froze for minutes inside a long local render.)
+   */
+  setBusyProgress(fraction: number, nextFraction: number) {
+    const bar = this.busyEl?.querySelector('.g-progress .bar') as HTMLElement | null;
+    if (!bar || !(nextFraction > 0)) return;
+    cancelAnimationFrame(this.busyRaf); // the time-based estimate stops; truth drives now
+    this.busyDeterminate = true;
+    bar.style.animation = 'none';
+    bar.style.transform = 'none';
+    const floor = Math.max(2, fraction * 100 + 0.5);
+    const ceiling = Math.min(99, nextFraction * 100 - 0.5);
+    const current = parseFloat(bar.style.width) || 0;
+    let pct = Math.max(floor, Math.min(Math.max(current, floor), ceiling));
+    bar.style.width = `${pct.toFixed(1)}%`;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      // Approach the step boundary with a ~45s time constant: visibly alive
+      // on a minutes-long render, honest about not being done.
+      pct += (ceiling - pct) * Math.min(1, dt / 45);
+      bar.style.width = `${pct.toFixed(2)}%`;
+      this.busyRaf = requestAnimationFrame(tick);
+    };
+    this.busyRaf = requestAnimationFrame(tick);
+  }
+
+  private busyCancelBtn: HTMLElement | null = null;
+
+  /**
+   * A red CANCEL above the busy card for abortable work (local renders).
+   * Pass null to remove it; hideBusy clears it with the card.
+   */
+  setBusyCancel(onCancel: (() => void) | null) {
+    if (!onCancel) {
+      this.busyCancelBtn?.remove();
+      this.busyCancelBtn = null;
+      return;
+    }
+    if (!this.busyEl || this.busyCancelBtn) return;
+    const btn = document.createElement('button');
+    btn.className = 'g-busy-cancel';
+    btn.textContent = '✕ CANCEL';
+    btn.addEventListener('click', () => {
+      UISound.play('click');
+      btn.textContent = 'CANCELLING...';
+      (btn as HTMLButtonElement).disabled = true;
+      onCancel();
+    });
+    this.busyEl.appendChild(btn); // last thing on the card, below bar and chips
+    this.busyCancelBtn = btn;
+  }
+
+  /**
+   * Per-unit progress inside one operation: a row of square chips, one per
+   * frame/anchor/step, each showing whether it is waiting, being worked on
+   * (blinking), finished or failed. A long multi-part job then reads as
+   * visible progress instead of one opaque wait (see the progress-feedback
+   * skill).
+   */
+  setBusySteps(steps: { label: string; state?: BusyStepState }[]) {
+    if (!this.busyEl) return;
+    let row = this.busyEl.querySelector('.g-busy-steps');
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'g-busy-steps';
+      this.busyEl.appendChild(row);
+      // The cancel button stays the LAST element on the card.
+      if (this.busyCancelBtn) this.busyEl.appendChild(this.busyCancelBtn);
+    }
+    row.replaceChildren(
+      ...steps.map((s) => {
+        const chip = document.createElement('span');
+        chip.className = `g-step ${s.state ?? 'pending'}`;
+        chip.textContent = s.label;
+        return chip;
+      }),
+    );
   }
 
   hideBusy() {
-    if (this.busyEl) this.busyEl.style.display = 'none';
+    cancelAnimationFrame(this.busyRaf);
+    this.busyCancelBtn = null; // removed with the card's content
+    const el = this.busyEl;
+    if (!el) return;
+    const bar = el.querySelector('.g-progress .bar') as HTMLElement | null;
+    if (bar && bar.style.animation === 'none') {
+      // Snap to 100%, let it register for a beat, then remove.
+      bar.style.width = '100%';
+      setTimeout(() => {
+        // A newer showBusy() may have replaced the content meanwhile.
+        if (el.contains(bar)) el.style.display = 'none';
+      }, 160);
+    } else {
+      el.style.display = 'none';
+    }
   }
 
   // ---------- Toasts ----------
 
-  toast(message: string, kind: 'info' | 'error' | 'success' = 'info') {
+  /**
+   * A transient key-hint card over the middle-top of the stage: an
+   * illustration of the keys plus one line saying what they do.
+   *
+   * Separate from toasts on purpose — a toast is news ("saved", "failed"),
+   * this is a control the user is expected to reach for RIGHT NOW, so it sits
+   * where their eyes already are and shows which key is currently chosen.
+   *
+   * Calling it again replaces the card and restarts its life, so holding an
+   * arrow key keeps it up instead of flickering.
+   */
+  keyHint(html: string, message: string, ms = 3500) {
+    let host = document.getElementById('genvy-keyhint');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'genvy-keyhint';
+      host.style.pointerEvents = 'none';
+      this.root.appendChild(host);
+    }
+    host.innerHTML = `<div class="g-keyhint-art">${html}</div><div class="g-keyhint-msg">${escapeHtml(message)}</div>`;
+    host.classList.add('visible');
+    if (this.keyHintTimer) clearTimeout(this.keyHintTimer);
+    this.keyHintTimer = setTimeout(() => {
+      host?.classList.remove('visible');
+    }, ms);
+  }
+
+  /** Drop the key hint now (tool changed, mode changed, work finished). */
+  hideKeyHint() {
+    if (this.keyHintTimer) clearTimeout(this.keyHintTimer);
+    this.keyHintTimer = null;
+    document.getElementById('genvy-keyhint')?.classList.remove('visible');
+  }
+
+  toast(message: string, kind: 'info' | 'error' | 'success' | 'warn' = 'info') {
     // Only one toast at a time: drop any existing ones instantly, no exit animation.
     const host = document.getElementById('genvy-toasts')!;
     host.replaceChildren();
@@ -664,10 +1048,16 @@ class HudShellImpl {
     el.textContent = message;
     host.appendChild(el);
     if (kind === 'error') UISound.play('error');
+    else if (kind === 'warn') UISound.play('warn');
     void slideIn(el, 'bottom');
+    // Errors, warnings and long messages stay up long enough to actually read.
+    const lifetime = Math.min(
+      10000,
+      Math.max(kind === 'error' || kind === 'warn' ? 6500 : 3600, message.length * 55),
+    );
     setTimeout(() => {
       if (el.isConnected) void slideOut(el, 'bottom').then(() => el.remove());
-    }, 3600);
+    }, lifetime);
   }
 }
 

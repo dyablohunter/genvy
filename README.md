@@ -10,7 +10,7 @@ The creation process is designed to feel like a game: a sci-fi command center, h
 - **server/** — Node + Fastify. Proxies AI calls (keys never reach the browser), persists the collection to `library/`, and runs the image pipeline (sharp).
 - **shared/** — zod schemas for every asset type + typed API contracts, imported by both sides.
 
-AI: **DeepSeek** (`deepseek-chat`, JSON mode) for concepts/configs/layouts; **OpenAI gpt-image-1** (low quality, 1024x1536 / 1536x1024) for pose sheets and tilesets, post-processed into game-ready assets.
+AI: **DeepSeek** (`deepseek-chat`, JSON mode) for concepts/configs/layouts; **OpenAI gpt-image-2** (low quality, 1024x1536 / 1536x1024) for pose sheets and tilesets, post-processed into game-ready assets.
 
 ## Setup
 

@@ -26,6 +26,23 @@ export const CharacterConceptSchema = z.object({
     )
     .default([]),
   tags: z.array(z.string()).default([]),
+  // ---- Sprite Pipeline v2 (C1) — optional so pre-v2 concepts keep validating ----
+  /** StyleContract preset id chosen for this character (see styleContract.ts). */
+  styleId: z.string().max(60).optional(),
+  /** Palette roles for consistency checks: outline/shadow/base/secondary/accent/highlight. */
+  paletteRoles: z
+    .object({
+      outline: z.string().max(30),
+      shadow: z.string().max(30),
+      base: z.string().max(30),
+      secondary: z.string().max(30),
+      accent: z.string().max(30),
+      highlight: z.string().max(30),
+    })
+    .partial()
+    .optional(),
+  /** Signature props/effects the neutral anchor must STRIP (weapons, glows, auras). */
+  signatureProps: z.array(z.string().max(80)).default([]),
 });
 export type CharacterConcept = z.infer<typeof CharacterConceptSchema>;
 
@@ -61,10 +78,63 @@ export const WorldLayoutSchema = z.object({
 });
 export type WorldLayout = z.infer<typeof WorldLayoutSchema>;
 
+/**
+ * World Maker v2: the model plans, CODE builds the grid.
+ *
+ * The old `worldLayout` asked DeepSeek for every tile index of a 40x23 map —
+ * ~920 integers per layer. That blew the token budget (truncated, unparseable
+ * JSON) and, when it did parse, produced rooms that did not connect and walls
+ * that did not enclose. This asks for a few dozen numbers instead: rooms,
+ * roles and densities. `buildWorldGrid` turns them into a correct map.
+ */
+export const WorldPlanSchema = z.object({
+  name: z.string().min(1).max(60),
+  description: z.string().max(600).default(''),
+  /** Fixed seed so the same plan always builds the same map. */
+  seed: z.number().int().min(0).optional(),
+  /** Tile index used for walkable floor. */
+  ground: z.number().int().min(0),
+  /** Tile index used for solid walls / the surrounding rock. */
+  wall: z.number().int().min(0),
+  rooms: z
+    .array(
+      z.object({
+        name: z.string().max(40).default(''),
+        x: z.number().int().min(0),
+        y: z.number().int().min(0),
+        w: z.number().int().min(2),
+        h: z.number().int().min(2),
+        /** Optional per-room floor (water pool, lava chamber...). */
+        floor: z.number().int().min(0).optional(),
+      }),
+    )
+    .min(1)
+    .max(24),
+  corridorWidth: z.number().int().min(1).max(3).default(1),
+  /** Scattered dressing; density is a fraction of eligible cells. */
+  decor: z
+    .array(
+      z.object({
+        tile: z.number().int().min(0),
+        density: z.number().min(0).max(0.6),
+        on: z.enum(['floor', 'wall']).default('floor'),
+      }),
+    )
+    .max(8)
+    .default([]),
+  /** Spawn points name a ROOM; the builder resolves the coordinates. */
+  spawnPoints: z
+    .array(z.object({ name: z.string().min(1).max(40), room: z.number().int().min(0) }))
+    .max(8)
+    .default([]),
+});
+export type WorldPlan = z.infer<typeof WorldPlanSchema>;
+
 export const aiConceptSchemas = {
   characterConcept: CharacterConceptSchema,
   tilesetConcept: TilesetConceptSchema,
   worldLayout: WorldLayoutSchema,
+  worldPlan: WorldPlanSchema,
 } as const;
 
 export type AiConceptSchemaName = keyof typeof aiConceptSchemas;

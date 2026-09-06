@@ -1,0 +1,117 @@
+{
+  "meta": {
+    "id": "animation-frame",
+    "description": "Z-Image Turbo + Fun ControlNet Union: the rendered COCO-18 skeleton conditions the pose; the ANCHOR conditions identity as the init latent (img2img at denoise 0.8) — prompt-only identity drifted from the picked variant in live testing, so the anchor's own pixels now seed every frame while the high denoise + pose ControlNet reshape the pose. Transcribed from Comfy-Org image_z_image_turbo_fun_union_controlnet.json + init-latent extension (2026-09-05).",
+    "models": {
+      "diffusion": "z_image_turbo_bf16.safetensors (diffusion_models/; .gguf quants auto-swap the loader)",
+      "textEncoder": "qwen_3_4b.safetensors (text_encoders/)",
+      "vae": "ae.safetensors (vae/)",
+      "controlnet": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors (model_patches/)"
+    }
+  },
+  "bindings": {
+    "positive": ["45", "inputs", "text"],
+    "seed": ["44", "inputs", "seed"],
+    "steps": ["44", "inputs", "steps"],
+    "cfg": ["44", "inputs", "cfg"],
+    "denoise": ["44", "inputs", "denoise"],
+    "width": ["31", "inputs", "width"],
+    "height": ["31", "inputs", "height"],
+    "checkpointName": ["46", "inputs", "unet_name"],
+    "identityImage": ["30", "inputs", "image"],
+    "poseImage": ["20", "inputs", "image"],
+    "poseStrength": ["60", "inputs", "strength"],
+    "lora": {
+      "checkpoint": "46",
+      "modelSource": ["46", 0],
+      "clipSource": ["39", 0],
+      "modelConsumers": [["60", "inputs", "model"]],
+      "clipConsumers": [["45", "inputs", "clip"]]
+    }
+  },
+  "nodes": {
+    "46": {
+      "class_type": "UNETLoader",
+      "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" }
+    },
+    "39": {
+      "class_type": "CLIPLoader",
+      "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "lumina2", "device": "default" }
+    },
+    "40": {
+      "class_type": "VAELoader",
+      "inputs": { "vae_name": "ae.safetensors" }
+    },
+    "64": {
+      "class_type": "ModelPatchLoader",
+      "inputs": { "name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors" }
+    },
+    "20": {
+      "class_type": "LoadImage",
+      "inputs": { "image": "pose.png" }
+    },
+    "30": {
+      "class_type": "LoadImage",
+      "inputs": { "image": "identity.png" }
+    },
+    "31": {
+      "class_type": "ImageScale",
+      "inputs": {
+        "upscale_method": "lanczos",
+        "width": 1024,
+        "height": 1024,
+        "crop": "disabled",
+        "image": ["30", 0]
+      }
+    },
+    "32": {
+      "class_type": "VAEEncode",
+      "inputs": { "pixels": ["31", 0], "vae": ["40", 0] }
+    },
+    "60": {
+      "class_type": "QwenImageDiffsynthControlnet",
+      "inputs": {
+        "strength": 1,
+        "model": ["46", 0],
+        "model_patch": ["64", 0],
+        "vae": ["40", 0],
+        "image": ["20", 0]
+      }
+    },
+    "47": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": { "shift": 3, "model": ["60", 0] }
+    },
+    "45": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "text": "", "clip": ["39", 0] }
+    },
+    "42": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": { "conditioning": ["45", 0] }
+    },
+    "44": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "denoise": 0.8,
+        "model": ["47", 0],
+        "positive": ["45", 0],
+        "negative": ["42", 0],
+        "latent_image": ["32", 0]
+      }
+    },
+    "43": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["44", 0], "vae": ["40", 0] }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": { "filename_prefix": "genvy", "images": ["43", 0] }
+    }
+  }
+}
