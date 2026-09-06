@@ -363,9 +363,7 @@ export class WorldToolScene extends Phaser.Scene {
         for (const [otherId, b] of penButtons) {
           b.setAttribute('variant', otherId === id ? 'accent' : '');
         }
-        HudShell.toast(hint.replace(/ — /, ' · ').toUpperCase());
-        if (id === 'triangle') this.showTriangleHint(5000);
-        else HudShell.hideKeyHint();
+        this.showToolHint(id);
       });
       penButtons.set(id, btn);
       penRow.appendChild(btn);
@@ -378,6 +376,17 @@ export class WorldToolScene extends Phaser.Scene {
       UISound.play('click');
       this.tool = this.tool === 'erase' ? 'brush' : 'erase';
       eraseBtn.setAttribute('variant', this.tool === 'erase' ? 'accent' : '');
+      if (this.tool === 'erase') {
+        HudShell.keyHint(
+          '<div class="row"><div class="pair"><div class="key">⌫</div>' +
+            '<div class="cap">ERASER</div></div></div>',
+          VECTOR_TOOLS.includes(this.maskTool)
+            ? 'CLICK A SHAPE TO DELETE IT'
+            : 'PAINTS CELLS EMPTY INSTEAD OF FILLING THEM',
+        );
+      } else {
+        this.showToolHint(this.maskTool, 2500);
+      }
     });
 
     // One word, two states: struck through when the overlay is hidden.
@@ -425,16 +434,6 @@ export class WorldToolScene extends Phaser.Scene {
       toolRow.appendChild(b);
     }
 
-    const hint = document.createElement('div');
-    hint.className = 'g-hint';
-    hint.textContent =
-      'PAINT WHERE THE GAME SHOULD COLLIDE. ✎ AND ∠ PAINT MASK CELLS; ⬠ ▭ △ ◯ MAKE VECTOR ' +
-      'SHAPES THAT FOLLOW THE ART INSTEAD OF THE GRID — ⬠ TRACES AN OUTLINE AND CLOSES ON ' +
-      'POINT 1, THE OTHERS DRAG. ERASER + A SHAPE TOOL DELETES THE SHAPE UNDER THE CURSOR. ' +
-      'ARROW KEYS AIM THE TRIANGLE. HOLD SHIFT FOR STRAIGHT LINES AND SQUARES, SPACE TO PAN, ' +
-      '[ AND ] RESIZE THE BRUSH, ' +
-      'ESC OR RIGHT-CLICK DROPS A PATH, ' +
-      'CTRL+Z UNDOES A STEP. SAVED WITH THE SCENE AS SHAPES PLUS A GRID AN ENGINE CAN READ.';
 
     panel.append(
       field('SCENE NAME', nameInput),
@@ -445,7 +444,6 @@ export class WorldToolScene extends Phaser.Scene {
       field('MASK RESOLUTION', cellSel),
       toolRow,
       clearBtn,
-      hint,
     );
     // Solid is the default: it is what most of a level needs.
     this.maskKindButtons.get(1)?.setAttribute('variant', 'accent');
@@ -726,20 +724,55 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /**
-   * The arrow-key card: which way the triangle points, drawn as the keys
-   * themselves with the live choice lit. Shown when the tool is PICKED and
-   * whenever an arrow is pressed — not on every draw, where it would be a nag
-   * about something the user has already learned.
+   * The card that explains the armed tool: its keys drawn as keys, and one
+   * line saying what the pointer does. It replaces the wall of hint text the
+   * panel used to carry — nobody reads a paragraph, and the paragraph was
+   * describing six tools at once when only one of them is ever armed.
    */
-  private showTriangleHint(ms = 3500) {
-    const key = (dir: 'up' | 'down' | 'left' | 'right', glyph: string) =>
-      `<div class="key${this.triangleDir === dir ? ' on' : ''}">${glyph}</div>`;
-    HudShell.keyHint(
-      `<div class="row">${key('up', '↑')}</div>` +
-        `<div class="row">${key('left', '←')}${key('down', '↓')}${key('right', '→')}</div>`,
-      'ARROW KEYS SET DIRECTION',
-      ms,
-    );
+  private showToolHint(tool: MaskTool, ms = 5000) {
+    const key = (glyph: string, caption: string, on = false) =>
+      `<div class="pair"><div class="key${glyph.length > 2 ? ' wide' : ''}${on ? ' on' : ''}">` +
+      `${glyph}</div><div class="cap">${caption}</div></div>`;
+    const row = (...keys: string[]) => `<div class="row">${keys.join('')}</div>`;
+
+    // Every tool shares the view and history keys, so they sit on one row of
+    // their own rather than being re-learned per tool.
+    const common = row(key('SPACE', 'PAN'), key('CTRL+Z', 'UNDO'));
+
+    const SPECIFIC: Record<MaskTool, { art: string; msg: string }> = {
+      freehand: {
+        art: row(key('SHIFT', 'STRAIGHT'), key('[', 'SMALLER'), key(']', 'BIGGER')),
+        msg: 'DRAG TO PAINT MASK CELLS',
+      },
+      line: {
+        art: row(key('SHIFT', 'STRAIGHT'), key('ESC', 'END PATH')),
+        msg: 'CLICK POINT TO POINT ALONG AN EDGE',
+      },
+      shape: {
+        art: row(key('SHIFT', 'STRAIGHT'), key('ESC', 'CANCEL')),
+        msg: 'TRACE AN OUTLINE · CLICK POINT 1 TO CLOSE IT',
+      },
+      rect: {
+        art: row(key('SHIFT', 'SQUARE')),
+        msg: 'DRAG A BOX',
+      },
+      triangle: {
+        art:
+          row(key('↑', '', this.triangleDir === 'up')) +
+          row(
+            key('←', '', this.triangleDir === 'left'),
+            key('↓', '', this.triangleDir === 'down'),
+            key('→', '', this.triangleDir === 'right'),
+          ),
+        msg: 'ARROW KEYS SET DIRECTION · DRAG TO SIZE IT',
+      },
+      circle: {
+        art: row(key('◯', 'DRAG OUT')),
+        msg: 'DRAG FROM THE CENTRE TO THE EDGE',
+      },
+    };
+    const { art, msg } = SPECIFIC[tool];
+    HudShell.keyHint(art + common, msg, ms);
   }
 
   /** Build the primitive a drag describes, or null when it is too small. */
@@ -2033,7 +2066,7 @@ export class WorldToolScene extends Phaser.Scene {
         ev.preventDefault();
         this.triangleDir = dir;
         UISound.play('click');
-        this.showTriangleHint();
+        this.showToolHint('triangle');
         this.drawShapes(); // an in-progress drag re-aims immediately
       });
     }
