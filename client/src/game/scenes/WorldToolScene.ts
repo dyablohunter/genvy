@@ -60,6 +60,8 @@ type PaintTool = 'brush' | 'erase' | 'fill';
 /** Cell tools paint the grid mask; vector tools produce SceneShapes. */
 type MaskTool = 'freehand' | 'line' | 'shape' | 'rect' | 'triangle' | 'circle' | 'fill';
 const VECTOR_TOOLS: MaskTool[] = ['shape', 'rect', 'triangle', 'circle'];
+/** What a colliding TILE reports as: the dummy treats it like painted solid. */
+const SOLID_KIND = SCENE_MASK_KINDS.find((k) => k.key === 'solid')?.id ?? 1;
 
 export class WorldToolScene extends Phaser.Scene {
   private tileset: Tileset | null = null;
@@ -459,8 +461,31 @@ export class WorldToolScene extends Phaser.Scene {
       return;
     }
     const scene = this.activeScene;
-    if (!scene) return HudShell.toast('PAINT OR OPEN A SCENE FIRST', 'error');
-    const platformer = scene.view === 'side';
+    if (!scene && !this.map) {
+      return HudShell.toast('PAINT A SCENE OR BUILD A MAP FIRST', 'error');
+    }
+    // A scene knows how it is framed; a tilemap does not, so it is asked.
+    const viewSel = document.createElement('select');
+    for (const [value, label] of [
+      ['side', 'SIDE VIEW — GRAVITY & JUMP'],
+      ['topdown', 'OVERHEAD — 8-WAY, NO GRAVITY'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      viewSel.appendChild(opt);
+    }
+    if (scene) viewSel.value = scene.view === 'side' ? 'side' : 'topdown';
+    const viewField = field('PHYSICS', viewSel);
+    // The scene's own framing decides it; only a tilemap needs the choice.
+    if (scene) viewField.style.display = 'none';
+    const platformer = viewSel.value === 'side';
+    viewSel.addEventListener('change', () => {
+      UISound.play('click');
+      const side = viewSel.value === 'side';
+      jumpIn.disabled = !side;
+      jumpField.style.opacity = side ? '1' : '0.45';
+    });
 
     const backdrop = document.createElement('div');
     backdrop.className = 'g-modal-backdrop';
@@ -599,6 +624,7 @@ export class WorldToolScene extends Phaser.Scene {
         characterId: charSel.value ? versionSel.value || null : null,
         height: Number(heightIn.value) || 64,
         jumpHeight: Number(jumpIn.value) || 120,
+        view: viewSel.value as Scene['view'],
       });
     });
 
@@ -629,7 +655,7 @@ export class WorldToolScene extends Phaser.Scene {
     versionField.style.flex = '1 1 0';
     for (const f of [charField, versionField]) f.style.minWidth = '0';
     whoRow.append(charField, versionField);
-    stack.append(whoRow, row, fullLabel, spawnBtn, hint);
+    stack.append(whoRow, viewField, row, fullLabel, spawnBtn, hint);
     modal.append(titleRow, stack);
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
@@ -655,31 +681,77 @@ export class WorldToolScene extends Phaser.Scene {
         }
       }
     }
+    // A tilemap has no painted spawn: use the planned player point, which a
+    // generated layout provides in TILE coordinates.
+    const ts = this.tileset;
+    const player = this.plannedSpawns.find((p) => p.name === 'player') ?? this.plannedSpawns[0];
+    if (player && ts) {
+      return { x: (player.x + 0.5) * ts.tileWidth, y: (player.y + 0.5) * ts.tileHeight };
+    }
     return null;
   }
 
-  private async spawnDummy(opts: { characterId: string | null; height: number; jumpHeight: number }) {
-    const scene = this.activeScene;
-    if (!scene) return;
+  /** The pixel extent of whatever is being walked: the strip, or the map. */
+  private levelBounds(): { width: number; height: number } {
+    if (this.sceneActive && this.stripSize.width > 0) return this.stripSize;
+    const ts = this.tileset;
+    if (this.map && ts) {
+      return { width: this.map.width * ts.tileWidth, height: this.map.height * ts.tileHeight };
+    }
+    return { width: 0, height: 0 };
+  }
+
+  /**
+   * Collision at a world point, from every source the level has: painted
+   * zones, vector shapes, and TILES flagged as colliding. A tilemap's
+   * collision is the tiles themselves — which is what lets the dummy walk a
+   * level that has no painted mask at all.
+   */
+  private collisionAt(x: number, y: number): number {
+    if (this.sceneActive) {
+      const cx = Math.floor(x / this.maskCell);
+      const cy = Math.floor(y / this.maskCell);
+      const painted = this.mask[cy]?.[cx] ?? 0;
+      if (painted !== 0) return painted;
+    }
+    if (this.tilesActive && this.map && this.tileset) {
+      const tx = Math.floor(x / this.tileset.tileWidth);
+      const ty = Math.floor(y / this.tileset.tileHeight);
+      for (const layer of this.layers) {
+        const index = layer.getTileAt(tx, ty)?.index ?? -1;
+        if (index >= 0 && this.tileset.tiles.find((t) => t.index === index)?.collides) {
+          return SOLID_KIND;
+        }
+      }
+    }
+    return 0;
+  }
+
+  private async spawnDummy(opts: {
+    characterId: string | null;
+    height: number;
+    jumpHeight: number;
+    view: Scene['view'];
+  }) {
+    const bounds = this.levelBounds();
+    if (bounds.width < 1) return HudShell.toast('NOTHING TO WALK ON YET', 'error');
     this.dummy?.destroy();
     const at = this.findPlayerSpawn();
     if (!at) {
-      HudShell.toast('NO PLAYER SPAWN PAINTED (✦) — SPAWNING AT THE CENTRE', 'warn');
+      HudShell.toast('NO PLAYER SPAWN — SPAWNING AT THE CENTRE', 'warn');
     }
-    const spawn = at ?? { x: this.stripSize.width / 2, y: this.stripSize.height / 2 };
+    const spawn = at ?? { x: bounds.width / 2, y: bounds.height / 2 };
     const dummy = new SceneDummy(this, opts, {
-      maskAt: (x, y) => {
-        const cx = Math.floor(x / this.maskCell);
-        const cy = Math.floor(y / this.maskCell);
-        return this.mask[cy]?.[cx] ?? 0;
-      },
+      maskAt: (x, y) => this.collisionAt(x, y),
       shapes: () => this.shapes,
-      view: () => this.activeScene?.view ?? 'side',
-      bounds: () => this.stripSize,
+      view: () => opts.view,
+      bounds: () => this.levelBounds(),
     });
     await dummy.spawn(spawn.x, spawn.y);
     this.dummy = dummy;
-    HudShell.toast('DUMMY OUT — WASD/ARROWS, SHIFT RUNS' + (scene.view === 'side' ? ', SPACE JUMPS' : ''));
+    HudShell.toast(
+      'DUMMY OUT — WASD/ARROWS, SHIFT RUNS' + (opts.view === 'side' ? ', SPACE JUMPS' : ''),
+    );
   }
 
   /**
