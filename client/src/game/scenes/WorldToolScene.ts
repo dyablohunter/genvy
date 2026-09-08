@@ -367,18 +367,10 @@ export class WorldToolScene extends Phaser.Scene {
     this.edgePan(delta);
     if (!this.dummy?.active) return;
     this.dummy.update(delta);
-    const cam = this.cameras.main;
-    const p = this.dummy.position;
-    if (this.activeScene?.view === 'side') {
-      // A side-scroller's camera IS the player's position: locked to centre,
-      // as the game will hold it. A drifting camera here would be testing a
-      // camera the game does not have.
-      cam.centerOn(p.x, p.y);
-    } else {
-      // Overhead maps pan freely, so the follow stays gentle.
-      cam.scrollX += (p.x - (cam.scrollX + cam.width / 2 / cam.zoom)) * 0.06;
-      cam.scrollY += (p.y - (cam.scrollY + cam.height / 2 / cam.zoom)) * 0.06;
-    }
+    // The playtest camera IS the figure's position, in every mode: a
+    // drifting or lagging camera is a camera the game does not have, and it
+    // made the dummy look off-centre the moment it spawned.
+    this.cameras.main.centerOn(this.dummy.position.x, this.dummy.position.y);
   }
 
   /**
@@ -819,6 +811,8 @@ export class WorldToolScene extends Phaser.Scene {
     });
     await dummy.spawn(spawn.x, spawn.y);
     this.dummy = dummy;
+    // Centre on it NOW rather than easing there over the first second.
+    this.cameras.main.centerOn(dummy.position.x, dummy.position.y);
     HudShell.toast(
       'DUMMY OUT — WASD/ARROWS, SHIFT RUNS' +
         (opts.gravity > 0 && opts.jumps > 0 ? ', SPACE JUMPS' : ''),
