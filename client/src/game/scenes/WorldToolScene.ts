@@ -1432,6 +1432,50 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /**
+   * Re-cut an existing tileset at a different tile size — FREE, no render.
+   *
+   * The original AI sheet is kept on disk (`raw.png`), which is the whole
+   * point of keeping pipeline stages: changing the grid is a deterministic
+   * re-cut of art already paid for, not a reason to spend another render.
+   * Tile order and count are unchanged, so painted maps survive untouched.
+   */
+  private async resizeTiles(size: number) {
+    const ts = this.tileset;
+    if (!ts) return;
+    const source = ts.sourceImage?.path;
+    if (!source) {
+      return HudShell.toast('NO ORIGINAL SHEET ON DISK — RE-FORGE TO CHANGE THE SIZE', 'error');
+    }
+    await this.busy(null, `RE-CUTTING TILES AT ${size}PX (FREE)...`, async () => {
+      const extract = await api.extractTiles({
+        assetId: ts.id,
+        sourceFile: source.split('/').pop() ?? 'raw.png',
+        cols: GRID_COLS,
+        rows: GRID_ROWS,
+        targetTileSize: size,
+        dedupe: false,
+      });
+      const saved = await api.updateAsset<Tileset>(ts.id, {
+        ...ts,
+        image: extract.tileset,
+        tileWidth: extract.tileWidth,
+        tileHeight: extract.tileHeight,
+        thumbnail: extract.thumbnail,
+      });
+      // The painting is in tile INDICES, which did not change — keep it and
+      // rebuild the map on the new grid.
+      const kept = this.layers.map((l) => this.layerToData(l));
+      this.tileset = saved;
+      await this.useTileset(saved);
+      if (this.map) this.buildMap(this.map.width, this.map.height, kept);
+      this.refreshStage();
+      await collection.refresh();
+      UISound.play('confirm');
+      HudShell.toast(`TILES RE-CUT AT ${size}PX · GRID NOW ${size}PX`, 'success');
+    });
+  }
+
+  /**
    * The edit stage's left panel: the way back to step 1, the playtest dummy,
    * and — in tile modes — the tile picker. It is present in every mode, so
    * these two actions live in one predictable place.
@@ -1460,6 +1504,13 @@ export class WorldToolScene extends Phaser.Scene {
         this.conceptNameIn.value = ts.name;
         this.conceptPromptIn.value = ts.description;
         this.conceptTilesIn.value = ts.tiles.map((t) => t.name).join('\n');
+        // Tile size is a property OF THIS TILESET, not a lingering UI choice.
+        if (this.tileSizeSel) {
+          const stored = String(ts.tileWidth);
+          this.tileSizeSel.value = [...this.tileSizeSel.options].some((o) => o.value === stored)
+            ? stored
+            : '64';
+        }
         this.conceptFields.style.display = '';
         for (const el of [this.conceptPromptIn, this.conceptTilesIn]) autoGrow.refresh(el);
         // The fields now describe the SAVED tileset; make that the concept so
@@ -2863,7 +2914,15 @@ export class WorldToolScene extends Phaser.Scene {
     for (const el of [prompt, this.conceptNameIn, this.conceptPromptIn, this.conceptTilesIn]) {
       el.addEventListener('input', saveConceptDraft);
     }
-    tileSizeSel.addEventListener('change', saveConceptDraft);
+    tileSizeSel.addEventListener('change', () => {
+      saveConceptDraft();
+      // With a tileset open, changing the size RE-CUTS it from the original
+      // render — free — so the grid you paint on is the size you asked for
+      // without waiting for another forge.
+      const ts = this.tileset;
+      const size = Number(tileSizeSel.value) || 64;
+      if (ts && ts.tileWidth !== size) void this.resizeTiles(size);
+    });
 
     panel.append(
       field('DESCRIBE THE WORLD THEME', prompt),
