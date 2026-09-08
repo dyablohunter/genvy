@@ -25,8 +25,6 @@ export interface ScenePanelHooks {
    * assets in the inventory — the session owns one scene at a time.
    */
   current: () => Scene | null;
-  /** Open the playtest dummy setup. */
-  dummy: () => void;
   /** Run work behind the shared busy indicator. */
   busy: (
     label: string,
@@ -116,17 +114,6 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
     orientButtons.set(id, btn);
     orientRow.appendChild(btn);
   }
-  // The rest of the CANVAS line is the playtest dummy, where it has always
-  // been: paint, then walk what was painted.
-  const dummyBtn = document.createElement('genvy-button') as GenvyButton;
-  dummyBtn.setAttribute('label', 'DUMMY');
-  dummyBtn.title = 'Drop a controllable test character onto the scene';
-  dummyBtn.style.flex = '1 1 auto';
-  dummyBtn.onClick(() => {
-    UISound.play('click');
-    hooks.dummy();
-  });
-  orientRow.appendChild(dummyBtn);
 
 
   function setOrientation(next: ImageOrientation) {

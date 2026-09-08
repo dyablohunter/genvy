@@ -140,6 +140,8 @@ export class WorldToolScene extends Phaser.Scene {
   private sceneSection: HTMLElement | null = null;
   /** The edit stage's tile picker, split out of the concept panel. */
   private palettePanel: ReturnType<typeof HudShell.makePanel> | null = null;
+  /** The picker half of it — hidden when there are no tiles to pick. */
+  private paletteSection: HTMLElement | null = null;
   private scenePanel: ReturnType<typeof buildScenePanel> | null = null;
   private sceneImage: Phaser.GameObjects.Image | null = null;
   /** Every panel of the open strip, in travel order. */
@@ -278,7 +280,6 @@ export class WorldToolScene extends Phaser.Scene {
     const scenePanel = buildScenePanel({
       display: (scene) => this.displayScene(scene),
       current: () => this.activeScene,
-      dummy: () => this.openDummyModal(),
       busy: (label, fn, timing) => this.busy(null, label, fn, timing),
     });
     this.scenePanel = scenePanel;
@@ -853,6 +854,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.tilesetSection = null;
     this.sceneSection = null;
     this.palettePanel = null;
+    this.paletteSection = null;
     this.scenePanel = null;
     this.sceneImage = null;
     this.sceneImages = [];
@@ -1134,7 +1136,6 @@ export class WorldToolScene extends Phaser.Scene {
     const kindField = field('PAINT AS', kindRow);
     const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
-      backBtn,
       targetRow,
       nameField,
       saveBtn,
@@ -1243,10 +1244,22 @@ export class WorldToolScene extends Phaser.Scene {
     HudShell.toast('UNSAVED CONCEPT TEXT RESTORED', 'warn');
   }
 
-  /** Edit stage, tile modes: the picker, and the way back to the words. */
+  /**
+   * The edit stage's left panel: the way back to step 1, the playtest dummy,
+   * and — in tile modes — the tile picker. It is present in every mode, so
+   * these two actions live in one predictable place.
+   */
   private buildPalettePanel() {
     const panel = HudShell.makePanel('01 · TILES', 'left');
     this.palettePanel = panel;
+
+    const dummyBtn = document.createElement('genvy-button') as GenvyButton;
+    dummyBtn.setAttribute('label', 'DUMMY');
+    dummyBtn.title = 'Drop a controllable test character onto the level';
+    dummyBtn.onClick(() => {
+      UISound.play('click');
+      this.openDummyModal();
+    });
 
     const editBtn = document.createElement('genvy-button') as GenvyButton;
     editBtn.setAttribute('label', '✎ EDIT CONCEPT');
@@ -1275,7 +1288,12 @@ export class WorldToolScene extends Phaser.Scene {
     hint.textContent = 'CLICK A TILE TO PAINT WITH IT. RIGHT-CLICK TOGGLES COLLISION (RED DOT).';
 
     this.paletteHost = document.createElement('div');
-    panel.append(editBtn, hint, this.paletteHost);
+    // The picker and its instruction belong to tile modes only; the buttons
+    // above them belong to every mode.
+    this.paletteSection = document.createElement('div');
+    this.paletteSection.className = 'g-field-stack';
+    this.paletteSection.append(hint, this.paletteHost);
+    panel.append(editBtn, dummyBtn, this.paletteSection);
     return panel;
   }
 
@@ -1356,7 +1374,13 @@ export class WorldToolScene extends Phaser.Scene {
       if (this.tilesetSection) this.tilesetSection.style.display = this.tilesActive ? '' : 'none';
       if (this.sceneSection) this.sceneSection.style.display = this.sceneActive ? '' : 'none';
     } else {
-      if (this.tilesActive && this.palettePanel) HudShell.showPanel(this.palettePanel, 'left');
+      if (this.palettePanel) {
+        HudShell.showPanel(this.palettePanel, 'left');
+        this.palettePanel.setTitle(this.tilesActive ? '01 · TILES' : '01 · SCENE');
+      }
+      if (this.paletteSection) {
+        this.paletteSection.style.display = this.tilesActive ? '' : 'none';
+      }
       if (this.tilesActive && this.worldPanel) HudShell.showPanel(this.worldPanel, 'right');
       if (this.maskPanel) HudShell.showPanel(this.maskPanel, 'right');
       this.refreshToolsPanel();
