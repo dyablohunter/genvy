@@ -1,6 +1,10 @@
 import Phaser from 'phaser';
 import type { Scene, SceneShape, Character, Spritesheet, AnimationAsset } from '@genvy/shared';
-import { SCENE_MASK_KINDS, pointInShape } from '@genvy/shared';
+import { SCENE_MASK_KINDS, pointInShape, defaultFriction } from '@genvy/shared';
+
+/** The kind key behind a stored mask id, for the friction lookup. */
+const kindKey = (id: number) =>
+  SCENE_MASK_KINDS.find((k) => k.id === id)?.key ?? 'solid';
 import { api, fileUrl } from '../api/client.js';
 import { HudShell } from '../hud/HudShell.js';
 
@@ -22,10 +26,22 @@ import { HudShell } from '../hud/HudShell.js';
 export interface DummyOptions {
   /** Height on screen, in scene pixels. */
   height: number;
-  /** Jump apex height, in scene pixels (side view only). */
+  /** Jump apex height, in scene pixels (gravity only). */
   jumpHeight: number;
   /** A character asset to wear, or null for the stick figure. */
   characterId: string | null;
+  /**
+   * Gravity multiplier on the base rate. 0 turns gravity OFF entirely and the
+   * figure moves freely in eight directions — which is what an overhead level
+   * wants, and also how a swimming or flying character is tested.
+   */
+  gravity: number;
+  /** How many jumps before touching ground again. 0 = no jump at all. */
+  jumps: number;
+  /** Move speed multiplier on the base rate. */
+  speed: number;
+  /** Surfaces slide: the mask's friction values drive acceleration. */
+  useFriction: boolean;
 }
 
 /** Mask ids the dummy treats as ground/wall. */
@@ -53,6 +69,12 @@ export class SceneDummy {
   private padJump = false;
   /** Time spent continuously airborne — the jump pose waits for it. */
   private airMs = 0;
+  /** Jumps spent since the last landing, for multi-jump. */
+  private jumpsUsed = 0;
+  /** Jump is edge-triggered: holding the key must not spend every jump. */
+  private jumpHeld = false;
+  /** Current horizontal velocity carried across frames, for friction. */
+  private driftX = 0;
 
   constructor(
     private scene: Phaser.Scene,
@@ -73,9 +95,14 @@ export class SceneDummy {
     return !this.destroyed;
   }
 
-  /** True on side views: gravity, platforms and the jump exist only there. */
+  /**
+   * Gravity is what makes a level a platformer: with it, ground and one-way
+   * platforms matter and jumping means something; without it the figure
+   * moves freely in eight directions. The VIEW proposes it, the options
+   * decide it — testing a flying character on a side level is legitimate.
+   */
   private get platformer() {
-    return this.world.view() === 'side';
+    return this.opts.gravity > 0;
   }
 
   async spawn(x: number, y: number) {
@@ -203,6 +230,21 @@ export class SceneDummy {
     if (this.sprite.anims.currentAnim?.key !== key) this.sprite.play(key);
   }
 
+  /**
+   * How much grip the surface underfoot gives. A shape's own `friction`
+   * overrides its layer's default, which is the whole point of the field —
+   * one icy ramp among dry ones.
+   */
+  private surfaceFriction(): number {
+    const y = this.pos.y + 1;
+    for (const shape of this.world.shapes()) {
+      if (pointInShape(shape, this.pos.x, y)) {
+        return shape.friction ?? defaultFriction(kindKey(shape.kind));
+      }
+    }
+    return defaultFriction(kindKey(this.solidAt(this.pos.x, y)));
+  }
+
   /** The mask id at a world point, shapes included (shapes win). */
   private solidAt(x: number, y: number): number {
     for (const shape of this.world.shapes()) {
@@ -234,7 +276,8 @@ export class SceneDummy {
     this.padJump = pad?.jump ?? false;
 
     const inWater = this.solidAt(this.pos.x, this.pos.y - this.height / 2) === KIND.water;
-    const speed = this.height * (running ? 5.5 : 2.8) * (inWater ? 0.45 : 1);
+    const speed =
+      this.height * (running ? 5.5 : 2.8) * (inWater ? 0.45 : 1) * Math.max(0.1, this.opts.speed);
 
     if (this.platformer) {
       this.updatePlatformer(dt, { left, right, up, down, speed, inWater });
@@ -249,7 +292,19 @@ export class SceneDummy {
     input: { left: boolean; right: boolean; up: boolean; down: boolean; speed: number; inWater: boolean },
   ) {
     const k = this.keys;
-    this.vel.x = (input.left ? -1 : 0) * input.speed + (input.right ? 1 : 0) * input.speed;
+    const wanted = ((input.left ? -1 : 0) + (input.right ? 1 : 0)) * input.speed;
+    if (this.opts.useFriction) {
+      // Surfaces decide how fast you get moving and how long you keep going:
+      // ice is the same instruction with a lower grip, not a special case.
+      const grip = Phaser.Math.Clamp(this.surfaceFriction(), 0.05, 4);
+      const rate = Math.min(1, dt * 12 * grip);
+      this.driftX += (wanted - this.driftX) * rate;
+      if (Math.abs(this.driftX) < 1) this.driftX = 0;
+      this.vel.x = this.driftX;
+    } else {
+      this.vel.x = wanted;
+      this.driftX = wanted;
+    }
     if (this.vel.x !== 0) this.facing = Math.sign(this.vel.x);
 
     // Ladders suspend gravity while held.
@@ -261,13 +316,19 @@ export class SceneDummy {
       this.vel.y = (input.up ? -1 : 0) * input.speed + (input.down ? 1 : 0) * input.speed;
     } else {
       this.onLadder = false;
-      this.vel.y += GRAVITY * (input.inWater ? 0.35 : 1) * dt;
+      this.vel.y += GRAVITY * this.opts.gravity * (input.inWater ? 0.35 : 1) * dt;
     }
 
-    // Jump velocity from the requested apex: v = sqrt(2 g h).
-    const wantJump = k.space?.isDown || input.up || this.padJump;
-    if (wantJump && (this.grounded || this.onLadder)) {
-      this.vel.y = -Math.sqrt(2 * GRAVITY * this.opts.jumpHeight);
+    // Jump velocity from the requested apex: v = sqrt(2 g h), at the gravity
+    // actually in force — otherwise a heavy world would undershoot the apex
+    // the user asked for.
+    const wantJump = (k.space?.isDown ?? false) || input.up || this.padJump;
+    const pressed = wantJump && !this.jumpHeld;
+    this.jumpHeld = wantJump;
+    if (this.grounded || this.onLadder) this.jumpsUsed = 0;
+    if (pressed && this.opts.jumps > 0 && this.jumpsUsed < this.opts.jumps) {
+      this.vel.y = -Math.sqrt(2 * GRAVITY * this.opts.gravity * this.opts.jumpHeight);
+      this.jumpsUsed++;
       this.grounded = false;
       this.onLadder = false;
       this.play('jump');

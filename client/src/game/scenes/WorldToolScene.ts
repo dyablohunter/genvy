@@ -37,6 +37,7 @@ import { saveDraft, loadDraft, clearDraft, packGrid, unpackGrid } from '../../st
 import { ProviderControls } from '../../hud/providerControls.js';
 import { buildScenePanel } from './scenePanel.js';
 import { SceneDummy } from '../dummy.js';
+import type { DummyOptions } from '../dummy.js';
 import {
   field,
   textInput,
@@ -464,28 +465,92 @@ export class WorldToolScene extends Phaser.Scene {
     if (!scene && !this.map) {
       return HudShell.toast('PAINT A SCENE OR BUILD A MAP FIRST', 'error');
     }
-    // A scene knows how it is framed; a tilemap does not, so it is asked.
-    const viewSel = document.createElement('select');
+    // Physics, stated plainly. GRAVITY is the one that changes the game:
+    // with it the level is a platformer (ground, one-way platforms, a jump);
+    // without it the figure simply walks in all eight directions, which is
+    // what an overhead map wants — and also how a flying or swimming
+    // character gets tested on a side level.
+    const gravitySel = document.createElement('select');
     for (const [value, label] of [
-      ['side', 'SIDE VIEW — GRAVITY & JUMP'],
-      ['topdown', 'OVERHEAD — 8-WAY, NO GRAVITY'],
+      ['1', 'NORMAL — PLATFORMER'],
+      ['0.5', 'LOW — FLOATY'],
+      ['1.8', 'HIGH — HEAVY'],
+      ['0', 'NONE — WALK IN ALL DIRECTIONS'],
     ] as const) {
       const opt = document.createElement('option');
       opt.value = value;
       opt.textContent = label;
-      viewSel.appendChild(opt);
+      gravitySel.appendChild(opt);
     }
-    if (scene) viewSel.value = scene.view === 'side' ? 'side' : 'topdown';
-    const viewField = field('PHYSICS', viewSel);
-    // The scene's own framing decides it; only a tilemap needs the choice.
-    if (scene) viewField.style.display = 'none';
-    const platformer = viewSel.value === 'side';
-    viewSel.addEventListener('change', () => {
-      UISound.play('click');
-      const side = viewSel.value === 'side';
-      jumpIn.disabled = !side;
-      jumpField.style.opacity = side ? '1' : '0.45';
-    });
+    // A scene's own framing proposes the default; it stays changeable.
+    if (scene && scene.view !== 'side') gravitySel.value = '0';
+
+    const jumpsSel = document.createElement('select');
+    for (const [value, label] of [
+      ['1', 'SINGLE'],
+      ['2', 'DOUBLE'],
+      ['3', 'TRIPLE'],
+      ['0', 'NONE'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      jumpsSel.appendChild(opt);
+    }
+
+    const speedSel = document.createElement('select');
+    for (const [value, label] of [
+      ['1', 'NORMAL'],
+      ['0.6', 'SLOW'],
+      ['1.6', 'FAST'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      speedSel.appendChild(opt);
+    }
+
+    const frictionCheck = document.createElement('input');
+    frictionCheck.type = 'checkbox';
+    frictionCheck.checked = true;
+    const frictionLabel = document.createElement('label');
+    frictionLabel.style.display = 'flex';
+    frictionLabel.style.alignItems = 'center';
+    frictionLabel.style.gap = '8px';
+    frictionLabel.style.cursor = 'pointer';
+    const frictionText = document.createElement('span');
+    frictionText.className = 'g-hint';
+    frictionText.style.margin = '0';
+    frictionText.textContent = 'SURFACES SLIDE — USE EACH LAYER’S FRICTION (ICE, RAMPS)';
+    frictionLabel.append(frictionCheck, frictionText);
+
+    const gravityField = field('GRAVITY', gravitySel);
+    const jumpsField = field('JUMPS', jumpsSel);
+    const physicsRow = document.createElement('div');
+    physicsRow.style.display = 'flex';
+    physicsRow.style.gap = '8px';
+    for (const f of [gravityField, jumpsField]) {
+      f.style.flex = '1 1 50%';
+      f.style.minWidth = '0';
+    }
+    physicsRow.append(gravityField, jumpsField);
+
+    const syncPhysics = () => {
+      // Without gravity there is nothing to jump against, and nothing to
+      // fall back down to — so the jump controls step aside entirely.
+      const hasGravity = Number(gravitySel.value) > 0;
+      jumpsSel.disabled = !hasGravity;
+      jumpsField.style.opacity = hasGravity ? '1' : '0.45';
+      const canJump = hasGravity && Number(jumpsSel.value) > 0;
+      jumpIn.disabled = !canJump;
+      jumpField.style.opacity = canJump ? '1' : '0.45';
+    };
+    for (const sel of [gravitySel, jumpsSel]) {
+      sel.addEventListener('change', () => {
+        UISound.play('click');
+        syncPhysics();
+      });
+    }
 
     const backdrop = document.createElement('div');
     backdrop.className = 'g-modal-backdrop';
@@ -581,13 +646,10 @@ export class WorldToolScene extends Phaser.Scene {
 
     const heightIn = numberInput(64, 16, 512);
     const jumpIn = numberInput(120, 16, 1024);
+    // syncPhysics below decides whether this is live: jumping needs gravity
+    // to jump against, and at least one jump allowed.
     const jumpField = field('JUMP HEIGHT (PX)', jumpIn);
-    if (!platformer) {
-      // Jumping is a platformer idea; an overhead dummy walks in 8 directions.
-      jumpField.style.opacity = '0.45';
-      jumpIn.disabled = true;
-      jumpField.title = 'ONLY SIDE-VIEW SCENES JUMP';
-    }
+    jumpField.title = 'HOW HIGH A JUMP REACHES, IN LEVEL PIXELS';
 
     const row = document.createElement('div');
     row.style.display = 'flex';
@@ -624,17 +686,18 @@ export class WorldToolScene extends Phaser.Scene {
         characterId: charSel.value ? versionSel.value || null : null,
         height: Number(heightIn.value) || 64,
         jumpHeight: Number(jumpIn.value) || 120,
-        view: viewSel.value as Scene['view'],
+        gravity: Number(gravitySel.value),
+        jumps: Number(jumpsSel.value) || 0,
+        speed: Number(speedSel.value) || 1,
+        useFriction: frictionCheck.checked,
       });
     });
 
     const hint = document.createElement('div');
     hint.className = 'g-hint';
-    hint.textContent = platformer
-      ? 'ARROWS OR WASD MOVE, SHIFT RUNS, SPACE JUMPS. SPAWNS AT THE FIRST PLAYER SPAWN ' +
-        'PAINTED (✦). ESC REMOVES THE DUMMY.'
-      : 'ARROWS OR WASD MOVE IN ALL DIRECTIONS, SHIFT RUNS. SPAWNS AT THE FIRST PLAYER ' +
-        'SPAWN PAINTED (✦). ESC REMOVES THE DUMMY.';
+    hint.textContent =
+      'ARROWS OR WASD MOVE, SHIFT RUNS, SPACE JUMPS. WITHOUT GRAVITY THE FIGURE WALKS IN ALL ' +
+      'DIRECTIONS INSTEAD. SPAWNS AT THE PLAYER SPAWN (✦) OR THE CENTRE. ESC REMOVES IT.';
 
     closeX.addEventListener('click', () => {
       UISound.play('click');
@@ -655,7 +718,17 @@ export class WorldToolScene extends Phaser.Scene {
     versionField.style.flex = '1 1 0';
     for (const f of [charField, versionField]) f.style.minWidth = '0';
     whoRow.append(charField, versionField);
-    stack.append(whoRow, viewField, row, fullLabel, spawnBtn, hint);
+    stack.append(
+      whoRow,
+      physicsRow,
+      field('MOVE SPEED', speedSel),
+      row,
+      frictionLabel,
+      fullLabel,
+      spawnBtn,
+      hint,
+    );
+    syncPhysics();
     modal.append(titleRow, stack);
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
@@ -727,12 +800,7 @@ export class WorldToolScene extends Phaser.Scene {
     return 0;
   }
 
-  private async spawnDummy(opts: {
-    characterId: string | null;
-    height: number;
-    jumpHeight: number;
-    view: Scene['view'];
-  }) {
+  private async spawnDummy(opts: DummyOptions) {
     const bounds = this.levelBounds();
     if (bounds.width < 1) return HudShell.toast('NOTHING TO WALK ON YET', 'error');
     this.dummy?.destroy();
@@ -744,13 +812,16 @@ export class WorldToolScene extends Phaser.Scene {
     const dummy = new SceneDummy(this, opts, {
       maskAt: (x, y) => this.collisionAt(x, y),
       shapes: () => this.shapes,
-      view: () => opts.view,
+      // The dummy asks the view only to describe itself; gravity is what
+      // actually decides how it moves, and that comes from the options.
+      view: () => (opts.gravity > 0 ? 'side' : 'topdown'),
       bounds: () => this.levelBounds(),
     });
     await dummy.spawn(spawn.x, spawn.y);
     this.dummy = dummy;
     HudShell.toast(
-      'DUMMY OUT — WASD/ARROWS, SHIFT RUNS' + (opts.view === 'side' ? ', SPACE JUMPS' : ''),
+      'DUMMY OUT — WASD/ARROWS, SHIFT RUNS' +
+        (opts.gravity > 0 && opts.jumps > 0 ? ', SPACE JUMPS' : ''),
     );
   }
 
