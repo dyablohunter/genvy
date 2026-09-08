@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type {
   RemoveBgRequest,
+  CropRectRequest,
   SliceSheetRequest,
   AutoSliceRequest,
   ExtractTilesRequest,
@@ -42,6 +43,27 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     const png = await pipe.toPng(keyed);
     const rel = await save(assetId, 'keyed.png', png);
     return { fileRef: { path: rel, width: keyed.width, height: keyed.height } };
+  });
+
+  /**
+   * Crop one image file to a rectangle, byte-faithfully — deterministic,
+   * free, no AI. The scene strip's panel crop. NOT the sprite forge's
+   * /api/image/crop: that one chroma-keys an opaque source on the way
+   * through, which would mangle a painted panel.
+   */
+  app.post<{ Body: CropRectRequest }>('/api/image/crop-rect', async (req) => {
+    const b = req.body ?? ({} as CropRectRequest);
+    if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
+    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    const x = Math.max(0, Math.floor(b.x));
+    const y = Math.max(0, Math.floor(b.y));
+    const w = Math.min(raw.width - x, Math.floor(b.w));
+    const h = Math.min(raw.height - y, Math.floor(b.h));
+    if (w < 8 || h < 8) throw new LibraryError(400, 'crop rectangle too small');
+    const [cell] = pipe.extractBoxes(raw, [{ x, y, w, h }]);
+    const png = await pipe.toPng(cell!);
+    const rel = await save(b.assetId, b.outName && /^[\w.-]+\.png$/.test(b.outName) ? b.outName : `crop_${Date.now().toString(36)}.png`, png);
+    return { fileRef: { path: rel, width: w, height: h } };
   });
 
   app.post<{ Body: SliceSheetRequest }>('/api/image/slice-sheet', async (req) => {

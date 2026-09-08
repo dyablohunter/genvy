@@ -31,8 +31,22 @@ const SIZE_LABELS: Record<number, string> = {
   1024: '1024 · MAX (SLOW)',
 };
 
-/** Published gpt-image-2 prices at genvy's render sizes, in dollars. */
-const QUALITY_PRICE: Record<string, number> = { low: 0.005, medium: 0.041, high: 0.165 };
+/**
+ * Published gpt-image-2 prices in dollars per image, by canvas and quality.
+ * Square is NOT cheaper than the tall/wide canvas — it costs more at every
+ * tier — so this is a table rather than a ratio off one row. It mirrors
+ * OPENAI_IMAGE_PRICE on the server: the preview must agree with what is
+ * actually booked, or the header spend contradicts the button that spent it.
+ *
+ *              1024x1024   1024x1536 / 1536x1024
+ *   low          $0.006            $0.005
+ *   medium       $0.053            $0.041
+ *   high         $0.211            $0.165
+ */
+const QUALITY_PRICE: Record<'square' | 'tall', Record<string, number>> = {
+  square: { low: 0.006, medium: 0.053, high: 0.211 },
+  tall: { low: 0.005, medium: 0.041, high: 0.165 },
+};
 
 export class ProviderControls {
   readonly providerSel = document.createElement('select');
@@ -49,6 +63,8 @@ export class ProviderControls {
   private candidateField: HTMLElement;
   /** Called whenever a selection changes (to refresh cost labels etc). */
   onChange: (() => void) | null = null;
+  /** The canvas the caller will request — it changes what a render costs. */
+  private canvas: 'portrait' | 'landscape' | 'square' = 'landscape';
 
   constructor(private opts: ProviderControlsOptions) {
     this.modelField = field('LOCAL MODEL', this.modelSel);
@@ -76,6 +92,38 @@ export class ProviderControls {
         this.onChange?.();
       });
     }
+  }
+
+  /**
+   * Tell the controls which canvas the job will use. A square costs less than
+   * a tall or wide one, so the quality prices and the cost preview both move.
+   */
+  setCanvas(canvas: 'portrait' | 'landscape' | 'square') {
+    if (this.canvas === canvas) return;
+    this.canvas = canvas;
+    this.fillQualityOptions(true);
+    this.onChange?.();
+  }
+
+  /** Dollar price of one image at a quality, for the current canvas. */
+  private price(quality: string | undefined): number {
+    return QUALITY_PRICE[this.canvas === 'square' ? 'square' : 'tall'][quality ?? 'low'] ?? 0;
+  }
+
+  /** (Re)label the quality picker with prices for the current canvas. */
+  private fillQualityOptions(force = false) {
+    const levels = this.current()?.capabilities.qualityLevels ?? [];
+    if (levels.length === 0) return;
+    if (!force && this.qualitySel.options.length === levels.length) return;
+    const previous = this.qualitySel.value;
+    this.qualitySel.innerHTML = '';
+    for (const l of levels) {
+      const opt = document.createElement('option');
+      opt.value = l;
+      opt.textContent = `${l.toUpperCase()} · $${this.price(l).toFixed(3)}`;
+      this.qualitySel.appendChild(opt);
+    }
+    this.qualitySel.value = levels.some((l) => l === previous) ? previous : 'low';
   }
 
   /** The rows to append into a panel, in order. */
@@ -176,17 +224,7 @@ export class ProviderControls {
     this.candidateField.style.display =
       this.opts.candidates && p?.capabilities.gridSheets === false ? '' : 'none';
 
-    const levels = p?.capabilities.qualityLevels ?? [];
-    if (levels.length > 0 && this.qualitySel.options.length !== levels.length) {
-      this.qualitySel.innerHTML = '';
-      for (const l of levels) {
-        const opt = document.createElement('option');
-        opt.value = l;
-        opt.textContent = `${l.toUpperCase()} · $${(QUALITY_PRICE[l] ?? 0).toFixed(3)}`;
-        this.qualitySel.appendChild(opt);
-      }
-      this.qualitySel.value = 'low';
-    }
+    this.fillQualityOptions();
   }
 
   providerId(): string | undefined {
@@ -220,14 +258,14 @@ export class ProviderControls {
       : undefined;
   }
 
-  /** "FREE" or an estimate like "~$0.005" for `imageCalls` images. */
+  /** "FREE" or an estimate like "$0.005" for `imageCalls` images. */
   costPreview(imageCalls = 1): string {
     const p = this.current();
     if (!p) return '';
     if (p.free) return 'FREE';
-    const per = QUALITY_PRICE[this.quality() ?? 'low'] ?? 0;
+    const per = this.price(this.quality());
     const calls = p.capabilities.gridSheets === false ? (this.candidates() ?? 1) * imageCalls : imageCalls;
-    return per ? `~$${(per * calls).toFixed(3)}` : '';
+    return per ? `$${(per * calls).toFixed(3)}` : '';
   }
 
   /**

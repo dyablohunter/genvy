@@ -20,6 +20,8 @@ import {
   animationStripImagePrompt,
   tilesetImagePrompt,
   sceneImagePrompt,
+  sceneCutoutEditPrompt,
+  sceneModifyEditPrompt,
   neutralAnchorImagePrompt,
   directionalAnchorEditPrompt,
   refineAnchorEditPrompt,
@@ -30,17 +32,50 @@ import { Library, LibraryError } from '../services/library.js';
 import { usage } from '../services/usage.js';
 import { activity } from '../services/activity.js';
 import * as pipe from '../services/imagePipeline.js';
+import { composeStrip } from '../services/sceneStrip.js';
 import { gateAnimationFrames, suggestsAnchorCascade } from '../services/animationGate.js';
 import type { AnimationGateReport } from '../services/animationGate.js';
 import { classifyMotion } from '../prompts/index.js';
 
 const SAFE_NAME = /^[\w.-]+\.png$/;
 
+/** One panel of a strip, as the editor draws it. */
+interface SceneModifyPanel {
+  /** Library-relative path of the panel's image. */
+  file: string;
+  flipX?: boolean;
+  flipY?: boolean;
+}
+
+interface SceneModifyBody {
+  assetId: string;
+  panel: SceneModifyPanel;
+  /** What to change, in the user's words. */
+  instruction?: string;
+  provider?: string;
+  modelFamily?: string;
+  quality?: 'low' | 'medium' | 'high';
+  renderSize?: number;
+  styleId?: string;
+  /** Ask the model for alpha output (a cut-out panel for parallax). */
+  transparent?: boolean;
+  outName?: string;
+}
+
 interface AiImageBody {
   prompt: string;
-  orientation: 'portrait' | 'landscape';
+  orientation: 'portrait' | 'landscape' | 'square';
   assetId?: string;
-  kind?: 'variants' | 'animation' | 'tileset' | 'scene' | 'raw' | 'anchor' | 'anchorDirectional' | 'neutralReset';
+  kind?:
+    | 'variants'
+    | 'animation'
+    | 'tileset'
+    | 'scene'
+    | 'sceneCutout'
+    | 'raw'
+    | 'anchor'
+    | 'anchorDirectional'
+    | 'neutralReset';
   /** For edit kinds: library file ("<assetId>/variant.png") used as the reference. */
   referenceFile?: string;
   category?: string;
@@ -80,13 +115,14 @@ interface AiImageBody {
   view?: 'isometric' | 'side' | 'topdown' | 'threequarter';
   /** kind 'scene': the backdrop loops horizontally. */
   seamless?: boolean;
+  loop?: 'none' | 'horizontal' | 'vertical';
   /** kind 'neutralReset': the effect/prop to strip from the anchor. */
   effect?: string;
   /** kind 'animation': gate-and-retry attempts (1-3, default 1). */
   attempts?: number;
 }
 
-const EDIT_KINDS = new Set(['animation', 'anchorDirectional', 'neutralReset']);
+const EDIT_KINDS = new Set(['animation', 'anchorDirectional', 'neutralReset', 'sceneCutout']);
 
 export function registerAiRoutes(app: FastifyInstance, library: Library) {
   app.post<{ Body: AiTextRequest }>('/api/ai/text', async (req) => {
@@ -304,6 +340,11 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
             ? refineAnchorEditPrompt(characterName, direction, notes.trim() || undefined, styleOpts)
             : directionalAnchorEditPrompt(characterName, direction, notes.trim() || undefined, styleOpts);
         }
+        if (kind === 'sceneCutout') {
+          // A cutout keeps the art it is given; the notes say what counts as
+          // foreground when the default guess is wrong.
+          return sceneCutoutEditPrompt(notes);
+        }
         if (kind === 'neutralReset') {
           return neutralResetEditPrompt(
             req.body.effect?.trim() || 'any held props, weapons, glows, particles, or effects',
@@ -493,7 +534,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
                 ? sceneImagePrompt(p, {
                     ...styleOpts,
                     view: req.body.view,
-                    seamless: req.body.seamless,
+                    loop: req.body.loop ?? (req.body.seamless ? 'horizontal' : 'none'),
                   })
                 : p;
       const runGenerate = async (p: string) => {
@@ -576,6 +617,86 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
           }
         : {}),
     };
+    } finally {
+      activity.end();
+    }
+  });
+
+  /**
+   * Modify ONE scene panel: the panel as drawn (mirroring applied) goes to
+   * the model with the instruction, and the result comes back resampled to
+   * the panel's own size. Multi-panel merges and directional extensions used
+   * to live here — dropped: the model renders a fixed canvas whatever it is
+   * shown, so stitching sections bought seams without buying resolution.
+   */
+  app.post<{ Body: SceneModifyBody }>('/api/ai/scene-modify', async (req) => {
+    const b = req.body ?? ({} as SceneModifyBody);
+    if (!b.assetId || !b.panel?.file) {
+      throw new LibraryError(400, 'assetId and panel are required');
+    }
+    const provider = providerRegistry.resolve(b.provider);
+    if (!provider.capabilities.edit) {
+      throw new LibraryError(400, `${provider.name} cannot edit images — pick another provider`);
+    }
+    const style = getStylePreset(b.styleId);
+
+    // What the user is looking at, in bytes: the panel mirrored as drawn.
+    const raw = await pipe.loadRaw(await fs.readFile(library.resolveFile(b.panel.file)));
+    const source = composeStrip(
+      [{ ...raw, flipX: b.panel.flipX === true, flipY: b.panel.flipY === true }],
+      'horizontal',
+    );
+
+    activity.begin(`${provider.name.toUpperCase()} · MODIFYING THE PANEL...`);
+    let reportedExact = false;
+    const onBilled = (info: { cents?: number; balanceCents?: number }) => {
+      if (info.cents !== undefined) reportedExact = true;
+      usage.addExact(provider.id, info);
+    };
+    try {
+      const editReq = {
+        prompt: sceneModifyEditPrompt(b.instruction ?? ''),
+        orientation:
+          source.width > source.height
+            ? ('landscape' as const)
+            : source.height > source.width
+              ? ('portrait' as const)
+              : ('square' as const),
+        // Only when ASKED. A scene is full-bleed artwork; forcing alpha here
+        // once overrode "make the background red" with a cut-out.
+        transparent: b.transparent === true && provider.capabilities.nativeAlpha,
+        style,
+        modelFamily: b.modelFamily,
+        quality: b.quality,
+        renderSize: b.renderSize,
+        references: [{ image: await pipe.toPng(source), role: 'identity' as const }],
+        onBilled,
+      };
+      const out = await provider.edit(editReq);
+      if (!reportedExact) usage.add(provider.id, provider.capabilities.costEstimate(editReq));
+
+      // Back to the panel's own size: the model renders its own canvas
+      // whatever it was shown, and a panel that came back bigger than its
+      // neighbours visibly stepped the strip.
+      let result = await pipe.loadRaw(out);
+      if (result.width !== source.width || result.height !== source.height) {
+        result = await pipe.loadRaw(
+          await sharp(result.data, {
+            raw: { width: result.width, height: result.height, channels: 4 },
+          })
+            .resize(source.width, source.height, { fit: 'fill' })
+            .png()
+            .toBuffer(),
+        );
+      }
+      const png = await pipe.toPng(result);
+      const dir = await library.fileDir(b.assetId);
+      const outName =
+        b.outName && SAFE_NAME.test(b.outName) ? b.outName : `mod_${Date.now().toString(36)}.png`;
+      await fs.writeFile(path.join(dir, outName), png);
+      return {
+        fileRef: { path: `${b.assetId}/${outName}`, width: result.width, height: result.height },
+      };
     } finally {
       activity.end();
     }

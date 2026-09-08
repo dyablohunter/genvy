@@ -35,6 +35,10 @@ npm workspaces: `shared/` → `server/` → `client/`, plus `local-inference/` (
 
 Every asset is JSON at `library/assets/<type>/<id>.json` with binaries under `library/files/<id>/`, indexed in `library/index.json` (`library/` is gitignored). Cross-references are **always `{id, type}` pairs**. The server validates schema + referential integrity on every write and refuses to delete a referenced asset (409 with referrer list) unless forced. Keep this shape — later milestones build on it.
 
+### Commit and push often
+
+Commit and push to `origin/main` at every coherent stopping point — a feature landing, a bug fixed and verified, a refactor compiling clean with tests green. Do not let days of work pile up as uncommitted diff: one session here lost methods to a bad edit and had to recover them from the last commit, and the recovery is only as good as the last push. Typecheck + tests green is the bar for committing; a red tree never gets committed. Small, described commits — the message says what changed and why, not "wip".
+
 ### One session, one asset (applies to EVERY tool and module)
 
 A tool session edits **one** asset and keeps editing that same asset. This is not a per-tool detail — it holds for sprites, tilesets, worlds, scenes and every tool added later.
@@ -48,7 +52,7 @@ A tool session edits **one** asset and keeps editing that same asset. This is no
 
 Text is DeepSeek; images go through a **provider registry** (`server/src/providers/`) so the pipeline never talks to a vendor directly:
 - **DeepSeek** (`deepseek-chat`, JSON mode) generates concepts/configs/layouts against the system prompts in `server/src/prompts/index.ts`, validated by zod schemas from `shared/src/schemas/aiConcepts.ts` (`POST /api/ai/text`).
-- **OpenAI gpt-image-2** (never gpt-image-1) — the default: native alpha, multi-reference edits, good instruction-following. $0.005/image at the low tier.
+- **OpenAI gpt-image-2** (never gpt-image-1) — the default: native alpha, multi-reference edits, good instruction-following. Priced per canvas AND quality (`OPENAI_IMAGE_PRICE` in `server/src/providers/openai.ts`, mirrored in `client/src/hud/providerControls.ts`): low/medium/high are $0.005/$0.041/$0.165 at 1024x1536 and 1536x1024, and $0.006/$0.053/$0.211 at 1024x1024 — a square costs MORE, not less. Keep the two tables in step or the header spend contradicts the button that spent it.
 - **Retro Diffusion** (optional key) — true pixel grids and a purpose-built animation endpoint; auto-preferred for animations in `pixel-*` styles. Uses the **v2 async API** (submit → poll `task_id`) and reports exact cost/balance, so its spend is booked from the provider, not estimated.
 - **Local ComfyUI** (`local-inference/` workspace, service on :3021) — free (`costEstimate: () => 0`), pose-conditioned: procedural COCO-18 skeletons (phase-accurate walk/run/idle/jump/attack, vitest-enforced) drive OpenPose ControlNet while the anchor drives IP-Adapter identity. Registered as `local-comfy`; `live` is a health poll of the service (which requires ComfyUI up). SDXL can't emit alpha: the service prefers rembg segmentation cutouts (`REMBG_PYTHON`), falling back to the provider's deterministic chroma keying — that's why it may claim `nativeAlpha`. GPU-validated end to end (see the tuning-history table in `local-inference/README.md` — the workflow weights are evidence-pinned by tests; don't retune them without new renders). Production quality needs the 16GB tier (768px + style LoRA).
 - Gemini was evaluated and **removed** (magenta/blank frames). Don't re-add it without new evidence.

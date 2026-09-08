@@ -14,22 +14,39 @@ import { WorldToolScene } from './scenes/WorldToolScene.js';
  */
 export function createGame(): Phaser.Game {
   const dpr = () => Math.max(1, window.devicePixelRatio || 1);
+  const host = document.getElementById('game-canvas-host')!;
+  // The canvas fills its HOST, not the window: the host is a cell of the app
+  // layout, and the strip timeline takes a row (or a column) out of it. Sizing
+  // to the window instead would leave Phaser drawing at the wrong aspect and
+  // the browser stretching the result.
+  const size = () => ({
+    width: Math.max(1, Math.round((host.clientWidth || window.innerWidth) * dpr())),
+    height: Math.max(1, Math.round((host.clientHeight || window.innerHeight) * dpr())),
+  });
+  const start = size();
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: 'game-canvas-host',
     backgroundColor: '#02040a',
     scale: {
       mode: Phaser.Scale.NONE,
-      width: Math.round(window.innerWidth * dpr()),
-      height: Math.round(window.innerHeight * dpr()),
+      width: start.width,
+      height: start.height,
     },
     pixelArt: true,
+    // Pads are for the playtest dummy; the browser only exposes one after a
+    // button is pressed on it, so enabling this costs nothing until then.
+    input: { gamepad: true },
     scene: [BootScene, HubScene, SpriteToolScene, WorldToolScene],
   });
-  // Scale.NONE means we own resizing: track the viewport (and zoom changes,
-  // which alter devicePixelRatio) ourselves.
-  window.addEventListener('resize', () => {
-    game.scale.resize(Math.round(window.innerWidth * dpr()), Math.round(window.innerHeight * dpr()));
-  });
+  // Scale.NONE means we own resizing: follow the HOST (which changes when a
+  // timeline band opens or closes) as well as the viewport and zoom changes,
+  // which alter devicePixelRatio.
+  const apply = () => {
+    const { width, height } = size();
+    if (game.scale.width !== width || game.scale.height !== height) game.scale.resize(width, height);
+  };
+  window.addEventListener('resize', apply);
+  new ResizeObserver(apply).observe(host);
   return game;
 }

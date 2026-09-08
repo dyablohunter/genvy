@@ -3,17 +3,26 @@ import type {
   Tileset,
   World,
   TilesetConcept,
-  WorldPlan,
   Scene,
   ImageProviderStatus,
 } from '@genvy/shared';
 import {
   buildWorldGrid,
   SCENE_MASK_KINDS,
+  maskKindsForView,
   shapeOutline,
   pointInShape,
+  fillMaskPolygon,
+  sceneSegments,
   type SceneShape,
+  type SceneSegment,
+  type Character,
+  type WorldProp,
 } from '@genvy/shared';
+
+/** Which way a strip travels, and which side an extension grows towards. */
+type StripAxis = 'horizontal' | 'vertical';
+type StripDirection = 'right' | 'left' | 'down' | 'up';
 
 /** Round a point to whole image pixels — shapes are stored as integers. */
 const round = (p: { x: number; y: number }) => ({ x: Math.round(p.x), y: Math.round(p.y) });
@@ -24,8 +33,10 @@ import { expectedDuration, recordDuration } from '../../hud/progress.js';
 import { goToScene, enterScene, registerAssetOpenHandlers } from '../../hud/transitions.js';
 import { api, fileUrl, ApiError } from '../../api/client.js';
 import { collection } from '../../state/collection.js';
+import { saveDraft, loadDraft, clearDraft, packGrid, unpackGrid } from '../../state/drafts.js';
 import { ProviderControls } from '../../hud/providerControls.js';
 import { buildScenePanel } from './scenePanel.js';
+import { SceneDummy } from '../dummy.js';
 import {
   field,
   textInput,
@@ -44,10 +55,10 @@ interface WorldToolData {
 
 const GRID_COLS = 4;
 const GRID_ROWS = 6;
-const TILE_SIZE = 48;
+
 type PaintTool = 'brush' | 'erase' | 'fill';
 /** Cell tools paint the grid mask; vector tools produce SceneShapes. */
-type MaskTool = 'freehand' | 'line' | 'shape' | 'rect' | 'triangle' | 'circle';
+type MaskTool = 'freehand' | 'line' | 'shape' | 'rect' | 'triangle' | 'circle' | 'fill';
 const VECTOR_TOOLS: MaskTool[] = ['shape', 'rect', 'triangle', 'circle'];
 
 export class WorldToolScene extends Phaser.Scene {
@@ -77,7 +88,12 @@ export class WorldToolScene extends Phaser.Scene {
    * before any structural change like deleting a tile). Bounded, because a
    * 200x200 map is 40k numbers per layer per entry.
    */
-  private undoStack: number[][][][] = [];
+  private undoStack: { layers: number[][][]; props: WorldProp[] }[] = [];
+  /** Stretched-tile props: one tile drawn over a block of cells. */
+  private props: WorldProp[] = [];
+  private propImages: Phaser.GameObjects.Image[] = [];
+  /** One prop per click — a drag must not smear a trail of them. */
+  private propStamped = false;
   private static readonly UNDO_LIMIT = 40;
   private conceptFields: HTMLElement | null = null;
   private editTextsBtn: GenvyButton | null = null;
@@ -90,12 +106,97 @@ export class WorldToolScene extends Phaser.Scene {
   /** Provider/model/size/quality controls shared with the Sprite Forge. */
   private providerControls: ProviderControls | null = null;
   /** Which kind of level is being built: a tilemap or a painted scene. */
-  private mode: 'tilemap' | 'scene' = 'tilemap';
-  private modeButtons = new Map<'tilemap' | 'scene', GenvyButton>();
+  private mode: 'tilemap' | 'scene' | 'mixed' = 'tilemap';
+  private modeButtons = new Map<'tilemap' | 'scene' | 'mixed', GenvyButton>();
+  /**
+   * Two steps, like the sprite forge: CONCEPT (choose the kind of level and
+   * write/generate its texts) and EDIT (the tools). Forging moves forward;
+   * EDIT CONCEPT moves back.
+   */
+  private stage: 'concept' | 'edit' = 'concept';
+  /** Mixed mode paints two things; this says which the tools hit. */
+  private paintTarget: 'tiles' | 'zones' = 'tiles';
+
+  /** A painted backdrop exists in this mode. */
+  private get sceneActive() {
+    return this.mode !== 'tilemap';
+  }
+
+  /** Tile layers exist in this mode. */
+  private get tilesActive() {
+    return this.mode !== 'scene';
+  }
+
+  /** What a stroke writes right now: mask zones, or tiles. */
+  private get paintingZones() {
+    return this.mode === 'scene' || (this.mode === 'mixed' && this.paintTarget === 'zones');
+  }
   private tilesetPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private worldPanel: ReturnType<typeof HudShell.makePanel> | null = null;
+  private modePanel: ReturnType<typeof HudShell.makePanel> | null = null;
+  /** Step 1 as one centred panel, the way the sprite forge opens. */
+  private conceptPanel: ReturnType<typeof HudShell.makePanel> | null = null;
+  private tilesetSection: HTMLElement | null = null;
+  private sceneSection: HTMLElement | null = null;
+  /** The edit stage's tile picker, split out of the concept panel. */
+  private palettePanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private scenePanel: ReturnType<typeof buildScenePanel> | null = null;
   private sceneImage: Phaser.GameObjects.Image | null = null;
+  /** Every panel of the open strip, in travel order. */
+  private sceneImages: Phaser.GameObjects.Image[] = [];
+  /** Total extent of the strip in image pixels — the mask spans all of it. */
+  private stripSize = { width: 0, height: 0 };
+  /** The timeline band, when a looping scene is open. */
+  private timelineEl: HTMLElement | null = null;
+  /** The hover card carrying the actions for whichever panel is under the pointer. */
+  private timelineCard: HTMLElement | null = null;
+  /** Pending dismissal of that card, cancelled while the pointer is on it. */
+  private cardHideTimer: number | null = null;
+  /** The playtest figure walking the painted collision, when one is out. */
+  private dummy: SceneDummy | null = null;
+  /** The X that leaves fullscreen playtest; exists only while in it. */
+  private playtestExit: HTMLElement | null = null;
+  /** Its neighbour: shows/hides the painted overlays mid-playtest. */
+  private playtestMask: HTMLElement | null = null;
+  /** The panel's OVERLAY toggle, kept in step with the playtest one. */
+  private overlayBtn: GenvyButton | null = null;
+
+  /**
+   * Show or hide the painted overlays — a VIEW switch only. Collision is
+   * read from the mask data, never from these pixels, so the dummy walks the
+   * same level either way. Both toggles (the panel's and the playtest's)
+   * route through here so they can never disagree about the state.
+   */
+  private setOverlayVisible(visible: boolean) {
+    this.maskVisible = visible;
+    this.maskGfx?.setVisible(this.sceneActive && visible);
+    this.shapeGfx?.setVisible(this.sceneActive && visible);
+    if (visible) this.overlayBtn?.removeAttribute('data-off');
+    else this.overlayBtn?.setAttribute('data-off', '');
+    this.playtestMask?.classList.toggle('off', !visible);
+  }
+  /** Unsaved strokes exist; the next autosave tick writes them to a draft. */
+  private draftDirty = false;
+  private draftTimer: number | null = null;
+  private draftFlusher: (() => void) | null = null;
+
+  /**
+   * Last mouse position in CSS pixels, tracked on the WINDOW. Phaser's own
+   * pointer goes quiet when the mouse is over the HUD or holds still, and
+   * edge-panning has to keep flowing while the mouse HOLDS STILL at an edge
+   * and stop the instant it is over a panel instead of the canvas.
+   */
+  private edgePointer: { x: number; y: number; overCanvas: boolean } | null = null;
+  private edgePointerHandler: ((ev: MouseEvent) => void) | null = null;
+  /** Cropping one panel: which, the drag, and the overlay drawing it. */
+  private crop: {
+    index: number;
+    start: { x: number; y: number } | null;
+    rect: { x: number; y: number; w: number; h: number } | null;
+    gfx: Phaser.GameObjects.Graphics;
+  } | null = null;
+  /** Which panel the timeline has selected. */
+  private activeSegment = 0;
   private activeScene: Scene | null = null;
   /** Gameplay mask over a painted scene: rows of SCENE_MASK_KINDS ids. */
   private mask: number[][] = [];
@@ -107,7 +208,16 @@ export class WorldToolScene extends Phaser.Scene {
   private maskPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private maskKindButtons = new Map<number, GenvyButton>();
   private sceneNameInput: HTMLInputElement | null = null;
+  /** The PAINT AS row, rebuilt whenever the scene's view changes. */
+  private kindRow: HTMLElement | null = null;
+  /** Whether the row shows every layer or just this view's. */
+  private showAllKinds = false;
+  private onKindPicked: (() => void) | null = null;
+  /** Friction stamped onto new shapes; null = the layer's own default. */
+  private shapeFriction: number | null = null;
   private brushSel: HTMLSelectElement | null = null;
+  /** Tile resolution for the next forge; existing tilesets keep their own. */
+  private tileSizeSel: HTMLSelectElement | null = null;
   /** Which mask tool is armed. See MaskTool. */
   private maskTool: MaskTool = 'freehand';
   /** The pen path's open anchor, if a path is being laid. */
@@ -141,7 +251,7 @@ export class WorldToolScene extends Phaser.Scene {
   /** Ring showing the pen's nib and size under the cursor. */
   private brushCursor: Phaser.GameObjects.Graphics | null = null;
   /** Mask snapshots for undo, one per stroke. */
-  private maskUndo: { mask: number[][]; shapes: SceneShape[] }[] = [];
+  private maskUndo: { mask: number[][]; shapes: SceneShape[]; segments: SceneSegment[] }[] = [];
 
   constructor() {
     super('worldTool');
@@ -166,36 +276,544 @@ export class WorldToolScene extends Phaser.Scene {
     const scenePanel = buildScenePanel({
       display: (scene) => this.displayScene(scene),
       current: () => this.activeScene,
-      clear: () => {
-        this.activeScene = null;
-        this.sceneImage?.destroy();
-        this.sceneImage = null;
-        this.maskGfx?.destroy();
-        this.maskGfx = null;
-        this.mask = [];
-        this.shapes = [];
-        this.shapeGfx?.destroy();
-        this.shapeGfx = null;
-        this.maskUndo = [];
-      },
+      dummy: () => this.openDummyModal(),
       busy: (label, fn, timing) => this.busy(null, label, fn, timing),
     });
     this.scenePanel = scenePanel;
+    // Step 1 is ONE centred panel: the mode choice and the concept fields of
+    // whichever crafts that mode needs, transplanted out of their panels so
+    // the step reads as a single screen rather than two docked columns.
+    this.modePanel = this.buildModePanel();
+    const tilesetPanel = this.buildTilesetPanel();
+    const conceptPanel = HudShell.makePanel('01 · CONCEPT', 'center');
+    this.conceptPanel = conceptPanel;
+    // Panels build their .gp-body only when CONNECTED; before that their
+    // content sits as direct children. Wrap those, not a body that does not
+    // exist yet — querying it here silently killed the whole create().
+    const sectionOf = (panel: HTMLElement) => {
+      const section = document.createElement('div');
+      section.className = 'g-field-stack';
+      section.append(...Array.from(panel.childNodes));
+      return section;
+    };
+    const modeSection = sectionOf(this.modePanel);
+    this.tilesetSection = sectionOf(tilesetPanel);
+    this.sceneSection = sectionOf(scenePanel.panel);
+    conceptPanel.append(modeSection, this.tilesetSection, this.sceneSection);
+
+    // Re-assert the current stage once the layout has actually mounted:
+    // setLayout re-docks panels asynchronously, and whatever showPanel did
+    // before that would be overridden (the sprite forge learned this first).
     void HudShell.setLayout([
-      this.buildModePanel(),
-      this.buildTilesetPanel(),
+      conceptPanel,
+      this.buildPalettePanel(),
       this.buildWorldPanel(),
-      scenePanel.panel,
       this.buildMaskPanel(),
-    ]);
+    ]).then(() => this.refreshStage());
     this.setMode('tilemap');
     this.setupCameraControls();
     this.setupPainting();
+    // Crash insurance: unsaved strokes go to a draft every few seconds and
+    // on the way out of the page. The library stays the truth — the draft is
+    // only the bridge to the next SAVE.
+    this.draftTimer = window.setInterval(() => {
+      if (this.draftDirty) this.writeDraft();
+    }, 4000);
+    this.draftFlusher = () => {
+      if (this.draftDirty) this.writeDraft();
+    };
+    window.addEventListener('beforeunload', this.draftFlusher);
+    document.addEventListener('visibilitychange', this.draftFlusher);
+
+    this.edgePointerHandler = (ev: MouseEvent) => {
+      this.edgePointer = {
+        x: ev.clientX,
+        y: ev.clientY,
+        overCanvas: ev.target === this.game.canvas,
+      };
+    };
+    window.addEventListener('mousemove', this.edgePointerHandler);
+    // Opening or closing a timeline band resizes the canvas: re-fit the strip
+    // so the level does not end up half off-screen when the layout changes.
+    const refit = () => {
+      if (!this.sceneActive || this.sceneImages.length === 0) return;
+      // Fullscreen keeps its edge-to-edge fit; the editor keeps its framing.
+      if (this.inPlaytest) this.fitPlaytest();
+      else this.frameStrip();
+    };
+    this.scale.on(Phaser.Scale.Events.RESIZE, refit);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () =>
+      this.scale.off(Phaser.Scale.Events.RESIZE, refit),
+    );
     // The pickers are empty until the roster arrives — without this the
     // provider/model/quality selects render as blank boxes.
     void this.loadProviders();
 
     if (data?.assetId) void this.loadExisting(data.assetId, data.assetType ?? '');
+  }
+
+  update(_time: number, delta: number) {
+    this.edgePan(delta);
+    if (!this.dummy?.active) return;
+    this.dummy.update(delta);
+    const cam = this.cameras.main;
+    const p = this.dummy.position;
+    if (this.activeScene?.view === 'side') {
+      // A side-scroller's camera IS the player's position: locked to centre,
+      // as the game will hold it. A drifting camera here would be testing a
+      // camera the game does not have.
+      cam.centerOn(p.x, p.y);
+    } else {
+      // Overhead maps pan freely, so the follow stays gentle.
+      cam.scrollX += (p.x - (cam.scrollX + cam.width / 2 / cam.zoom)) * 0.06;
+      cam.scrollY += (p.y - (cam.scrollY + cam.height / 2 / cam.zoom)) * 0.06;
+    }
+  }
+
+  /**
+   * Fill the viewport with the LEVEL, not with empty world: a horizontal
+   * side-scroller stretches to full height and scrolls along its length, a
+   * vertical one to full width — and the camera is fenced to the strip, so
+   * the void beyond the artwork never shows.
+   */
+  private fitPlaytest() {
+    const { width, height } = this.stripSize;
+    if (width < 1 || height < 1) return;
+    const cam = this.cameras.main;
+    const vertical = this.activeScene?.loop === 'vertical';
+    cam.setZoom(vertical ? this.scale.width / width : this.scale.height / height);
+    cam.setBounds(0, 0, width, height);
+  }
+
+  /** Hand the whole viewport to the playtest: no panels, no band, just game. */
+  private enterPlaytest() {
+    document.body.classList.add('g-playtest');
+    this.fitPlaytest();
+    if (!this.playtestExit) {
+      const x = document.createElement('div');
+      x.className = 'g-playtest-exit';
+      x.textContent = '✕';
+      x.title = 'Back to the editor (ESC)';
+      x.addEventListener('click', () => {
+        UISound.play('click');
+        this.exitPlaytest();
+      });
+      document.getElementById('app')?.appendChild(x);
+      this.playtestExit = x;
+
+      // Toggle the overlays without touching what they MEAN: collision is
+      // read from the mask data, not from these pixels, so the dummy walks
+      // the same level either way — this only decides whether you SEE it.
+      const m = document.createElement('div');
+      m.className = `g-playtest-mask g-playtest-exit${this.maskVisible ? '' : ' off'}`;
+      m.textContent = '▦';
+      m.title = 'Show/hide the collision overlays (collision itself stays on)';
+      m.addEventListener('click', () => {
+        UISound.play('click');
+        this.setOverlayVisible(!this.maskVisible);
+        m.classList.toggle('off', !this.maskVisible);
+      });
+      document.getElementById('app')?.appendChild(m);
+      this.playtestMask = m;
+    }
+  }
+
+  /** Bring the editor back; the dummy stays out until dismissed itself. */
+  private exitPlaytest() {
+    if (!this.inPlaytest) return;
+    document.body.classList.remove('g-playtest');
+    this.playtestExit?.remove();
+    this.playtestExit = null;
+    this.playtestMask?.remove();
+    this.playtestMask = null;
+    // The editor pans freely again, and gets its framing back.
+    this.cameras.main.removeBounds();
+    this.frameStrip();
+  }
+
+  private get inPlaytest() {
+    return document.body.classList.contains('g-playtest');
+  }
+
+  /**
+   * Playtest setup: pick a body, size it, set the jump, then walk the level.
+   * A mask is only right when something walks on it, and painting collision
+   * without ever feeling it is how a level ships with a hole in the floor.
+   */
+  private openDummyModal() {
+    // The button is a toggle: with a dummy out, pressing it again clears the
+    // stage instead of stacking a second figure on the first.
+    if (this.dummy?.active) {
+      this.dummy.destroy();
+      this.dummy = null;
+      UISound.play('click');
+      HudShell.toast('DUMMY REMOVED');
+      return;
+    }
+    const scene = this.activeScene;
+    if (!scene) return HudShell.toast('PAINT OR OPEN A SCENE FIRST', 'error');
+    const platformer = scene.view === 'side';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'g-modal-backdrop';
+    const modal = document.createElement('div');
+    modal.className = 'g-modal g-modal-narrow';
+    const titleRow = document.createElement('div');
+    titleRow.className = 'g-modal-titlerow';
+    const title = document.createElement('div');
+    title.className = 'g-modal-title';
+    title.textContent = 'PLAYTEST DUMMY';
+    const closeX = document.createElement('div');
+    closeX.className = 'g-modal-close';
+    closeX.textContent = '✕';
+    titleRow.append(title, closeX);
+    const close = () => backdrop.remove();
+
+    // The body: the built-in stick figure, or a character that can actually
+    // BE a dummy. A forged character is really a family — "Name V1".."V4"
+    // are separate assets — so the picker offers the FAMILY and a VERSION
+    // beside it, the same way the inventory presents them. Only versions
+    // with a walk clip are selectable: one that cannot walk would glide
+    // around frozen, which reads as a bug in the playtest, not the asset.
+    // Unqualified versions stay listed, disabled, WITH the reason — silently
+    // missing looks lost, not unqualified.
+    const charSel = document.createElement('select');
+    const stick = document.createElement('option');
+    stick.value = '';
+    stick.textContent = 'STICK FIGURE (BUILT IN)';
+    charSel.appendChild(stick);
+
+    const versionSel = document.createElement('select');
+    type Version = { id: string; label: string; walks: boolean };
+    const families = new Map<string, Version[]>();
+
+    const syncVersions = () => {
+      versionSel.replaceChildren();
+      const versions = families.get(charSel.value) ?? [];
+      versionSel.disabled = versions.length === 0;
+      if (versions.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '—';
+        versionSel.appendChild(opt);
+        return;
+      }
+      for (const v of versions) {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.walks ? v.label : `${v.label} · NO WALK CLIP`;
+        opt.disabled = !v.walks;
+        versionSel.appendChild(opt);
+      }
+      // Newest walking version first serve: that is the one being iterated on.
+      const best = [...versions].reverse().find((v) => v.walks);
+      if (best) versionSel.value = best.id;
+    };
+    charSel.addEventListener('change', () => {
+      UISound.play('click');
+      syncVersions();
+    });
+
+    void (async () => {
+      const entries = collection.entries.filter((e) => e.type === 'character');
+      const checked = await Promise.all(
+        entries.map(async (entry) => {
+          try {
+            const c = await api.getAsset<Character>(entry.id);
+            return { entry, walks: Boolean(c.animations['walk']) };
+          } catch {
+            return { entry, walks: false };
+          }
+        }),
+      );
+      for (const { entry, walks } of checked) {
+        const base = entry.name.replace(/\s+V\d+$/i, '');
+        const version = /\s(V\d+)$/i.exec(entry.name)?.[1]?.toUpperCase() ?? 'V1';
+        const list = families.get(base) ?? [];
+        list.push({ id: entry.id, label: version, walks });
+        list.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+        families.set(base, list);
+      }
+      for (const [base, versions] of families) {
+        const opt = document.createElement('option');
+        opt.value = base;
+        const anyWalks = versions.some((v) => v.walks);
+        opt.textContent = anyWalks ? base.toUpperCase() : `${base.toUpperCase()} · NO WALK CLIP`;
+        opt.disabled = !anyWalks;
+        charSel.appendChild(opt);
+      }
+      syncVersions();
+    })();
+    syncVersions();
+
+    const heightIn = numberInput(64, 16, 512);
+    const jumpIn = numberInput(120, 16, 1024);
+    const jumpField = field('JUMP HEIGHT (PX)', jumpIn);
+    if (!platformer) {
+      // Jumping is a platformer idea; an overhead dummy walks in 8 directions.
+      jumpField.style.opacity = '0.45';
+      jumpIn.disabled = true;
+      jumpField.title = 'ONLY SIDE-VIEW SCENES JUMP';
+    }
+
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    const heightField = field('HEIGHT (PX)', heightIn);
+    for (const f of [heightField, jumpField]) {
+      f.style.flex = '1 1 50%';
+      f.style.minWidth = '0';
+    }
+    row.append(heightField, jumpField);
+
+    // The level on the game's own terms: no docks, no band, just viewport.
+    const fullLabel = document.createElement('label');
+    fullLabel.style.display = 'flex';
+    fullLabel.style.alignItems = 'center';
+    fullLabel.style.gap = '8px';
+    fullLabel.style.cursor = 'pointer';
+    const fullCheck = document.createElement('input');
+    fullCheck.type = 'checkbox';
+    const fullText = document.createElement('span');
+    fullText.className = 'g-hint';
+    fullText.style.margin = '0';
+    fullText.textContent = 'FULL VIEWPORT — HIDE ALL UI (ESC OR ✕ RETURNS)';
+    fullLabel.append(fullCheck, fullText);
+
+    const spawnBtn = document.createElement('genvy-button') as GenvyButton;
+    spawnBtn.setAttribute('variant', 'accent');
+    spawnBtn.setAttribute('label', 'SPAWN');
+    spawnBtn.onClick(() => {
+      UISound.play('confirm');
+      close();
+      if (fullCheck.checked) this.enterPlaytest();
+      void this.spawnDummy({
+        characterId: charSel.value ? versionSel.value || null : null,
+        height: Number(heightIn.value) || 64,
+        jumpHeight: Number(jumpIn.value) || 120,
+      });
+    });
+
+    const hint = document.createElement('div');
+    hint.className = 'g-hint';
+    hint.textContent = platformer
+      ? 'ARROWS OR WASD MOVE, SHIFT RUNS, SPACE JUMPS. SPAWNS AT THE FIRST PLAYER SPAWN ' +
+        'PAINTED (✦). ESC REMOVES THE DUMMY.'
+      : 'ARROWS OR WASD MOVE IN ALL DIRECTIONS, SHIFT RUNS. SPAWNS AT THE FIRST PLAYER ' +
+        'SPAWN PAINTED (✦). ESC REMOVES THE DUMMY.';
+
+    closeX.addEventListener('click', () => {
+      UISound.play('click');
+      close();
+    });
+    backdrop.addEventListener('pointerdown', (ev) => {
+      if (ev.target === backdrop) close();
+    });
+
+    const stack = document.createElement('div');
+    stack.className = 'g-field-stack';
+    const whoRow = document.createElement('div');
+    whoRow.style.display = 'flex';
+    whoRow.style.gap = '8px';
+    const charField = field('CHARACTER', charSel);
+    const versionField = field('VERSION', versionSel);
+    charField.style.flex = '2 1 0';
+    versionField.style.flex = '1 1 0';
+    for (const f of [charField, versionField]) f.style.minWidth = '0';
+    whoRow.append(charField, versionField);
+    stack.append(whoRow, row, fullLabel, spawnBtn, hint);
+    modal.append(titleRow, stack);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+  }
+
+  /** The first painted player spawn: a shape's centre wins, then a mask cell. */
+  private findPlayerSpawn(): { x: number; y: number } | null {
+    const spawnId = SCENE_MASK_KINDS.find((k) => k.key === 'spawnPlayer')?.id ?? 8;
+    const shape = this.shapes.find((sh) => sh.kind === spawnId);
+    if (shape) {
+      const outline = shapeOutline(shape);
+      if (shape.type === 'circle' && shape.points[0]) return { ...shape.points[0] };
+      if (outline.length > 0) {
+        const x = outline.reduce((s, p) => s + p.x, 0) / outline.length;
+        const y = outline.reduce((s, p) => s + p.y, 0) / outline.length;
+        return { x, y };
+      }
+    }
+    for (let y = 0; y < this.mask.length; y++) {
+      for (let x = 0; x < (this.mask[y]?.length ?? 0); x++) {
+        if (this.mask[y]![x] === spawnId) {
+          return { x: (x + 0.5) * this.maskCell, y: (y + 0.5) * this.maskCell };
+        }
+      }
+    }
+    return null;
+  }
+
+  private async spawnDummy(opts: { characterId: string | null; height: number; jumpHeight: number }) {
+    const scene = this.activeScene;
+    if (!scene) return;
+    this.dummy?.destroy();
+    const at = this.findPlayerSpawn();
+    if (!at) {
+      HudShell.toast('NO PLAYER SPAWN PAINTED (✦) — SPAWNING AT THE CENTRE', 'warn');
+    }
+    const spawn = at ?? { x: this.stripSize.width / 2, y: this.stripSize.height / 2 };
+    const dummy = new SceneDummy(this, opts, {
+      maskAt: (x, y) => {
+        const cx = Math.floor(x / this.maskCell);
+        const cy = Math.floor(y / this.maskCell);
+        return this.mask[cy]?.[cx] ?? 0;
+      },
+      shapes: () => this.shapes,
+      view: () => this.activeScene?.view ?? 'side',
+      bounds: () => this.stripSize,
+    });
+    await dummy.spawn(spawn.x, spawn.y);
+    this.dummy = dummy;
+    HudShell.toast('DUMMY OUT — WASD/ARROWS, SHIFT RUNS' + (scene.view === 'side' ? ', SPACE JUMPS' : ''));
+  }
+
+  /**
+   * Nudge the camera when the mouse sits within a few pixels of the canvas
+   * edge — the standard map-editor autoscroll, so a stroke or a shape can
+   * keep going past the visible edge without letting go of the tool.
+   */
+  private edgePan(deltaMs: number) {
+    const p = this.edgePointer;
+    // Painted mode only. In tilemap mode the pointer commutes constantly
+    // between the map and the palette, and every trip across the canvas edge
+    // scooted the map out from under the next click.
+    if (this.mode !== 'scene') return;
+    // Not while something else owns the camera: the pan grab, or the dummy's
+    // follow — autoscroll under those reads as the view running away.
+    if (!p || !p.overCanvas || this.spacePanning || this.dummy?.active) return;
+    const rect = this.game.canvas.getBoundingClientRect();
+    const margin = 5; // CSS px, as specified
+    const dx = p.x - rect.left < margin ? -1 : rect.right - p.x < margin ? 1 : 0;
+    const dy = p.y - rect.top < margin ? -1 : rect.bottom - p.y < margin ? 1 : 0;
+    if (dx === 0 && dy === 0) return;
+    const cam = this.cameras.main;
+    // Slow and steady, in SCREEN terms: ~260 CSS px/s whatever the zoom.
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const step = (260 * dpr * (deltaMs / 1000)) / cam.zoom;
+    cam.scrollX += dx * step;
+    cam.scrollY += dy * step;
+  }
+
+  /** The draft key for what is on the stage right now, or null. */
+  private draftKey(): string | null {
+    if (!this.tilesActive) {
+      return this.activeScene ? `world:scene:${this.activeScene.id}` : null;
+    }
+    if (!this.map || !this.tileset) return null;
+    return this.worldId ? `world:world:${this.worldId}` : `world:new:${this.tileset.id}`;
+  }
+
+  /** Park the unsaved layer of the current session in localStorage. Mixed
+   * mode has BOTH kinds of unsaved work, so both drafts are written. */
+  private writeDraft() {
+    if (this.sceneActive && this.activeScene) {
+      saveDraft(`world:scene:${this.activeScene.id}`, {
+        name: this.sceneNameInput?.value ?? '',
+        maskCell: this.maskCell,
+        mask: packGrid(this.mask),
+        shapes: this.shapes,
+      });
+    }
+    if (this.tilesActive && this.map && this.tileset) {
+      saveDraft(this.worldId ? `world:world:${this.worldId}` : `world:new:${this.tileset.id}`, {
+        name: this.worldNameIn.value,
+        layers: this.layers.map((l) => packGrid(this.layerToData(l))),
+        spawns: this.plannedSpawns,
+        props: this.props,
+      });
+    }
+    this.draftDirty = false;
+  }
+
+  /** Restore a parked scene draft over what the asset holds, if one exists. */
+  private restoreSceneDraft() {
+    const scene = this.activeScene;
+    if (!scene) return;
+    const draft = loadDraft<{ name: string; maskCell: number; mask: string; shapes: SceneShape[] }>(
+      `world:scene:${scene.id}`,
+    );
+    if (!draft) return;
+    const d = draft.data;
+    if (d.maskCell === this.maskCell && d.mask) {
+      const grid = unpackGrid(d.mask);
+      // Only where the geometry still agrees — a re-painted scene of a new
+      // size makes the old strokes meaningless.
+      if (grid.length === this.mask.length && (grid[0]?.length ?? 0) === (this.mask[0]?.length ?? 0)) {
+        this.mask = grid;
+      }
+    }
+    if (Array.isArray(d.shapes)) this.shapes = d.shapes;
+    if (d.name && this.sceneNameInput) this.sceneNameInput.value = d.name;
+    this.drawMask();
+    this.drawShapes();
+    const mins = Math.max(1, Math.round((Date.now() - draft.savedAt) / 60000));
+    HudShell.toast(`UNSAVED WORK FROM ${mins} MIN AGO RESTORED — SAVE SCENE TO KEEP IT`, 'warn');
+  }
+
+  /** Restore a parked tilemap draft onto the freshly built layers. */
+  private restoreWorldDraft() {
+    const key = this.draftKey();
+    if (!key || !this.tilesActive) return;
+    const draft = loadDraft<{
+      name: string;
+      layers: string[];
+      spawns: { name: string; x: number; y: number }[];
+      props?: WorldProp[];
+    }>(key);
+    if (!draft) return;
+    const d = draft.data;
+    d.layers?.forEach((packed, li) => {
+      const layer = this.layers[li];
+      if (!layer) return;
+      unpackGrid(packed).forEach((row, y) => {
+        row.forEach((index, x) => {
+          if (x >= layer.tilemap.width || y >= layer.tilemap.height) return;
+          if (index < 0) layer.removeTileAt(x, y);
+          else layer.putTileAt(index, x, y);
+        });
+      });
+    });
+    if (d.name) this.worldNameIn.value = d.name;
+    if (Array.isArray(d.spawns) && d.spawns.length > 0) this.plannedSpawns = d.spawns;
+    if (Array.isArray(d.props)) {
+      this.props = d.props;
+      this.drawProps();
+    }
+    const mins = Math.max(1, Math.round((Date.now() - draft.savedAt) / 60000));
+    HudShell.toast(`UNSAVED WORK FROM ${mins} MIN AGO RESTORED — SAVE WORLD TO KEEP IT`, 'warn');
+  }
+
+  /** The band lives on the HUD root, so leaving the tool must take it down. */
+  shutdown() {
+    document.body.classList.remove('g-page-scroll');
+    this.exitPlaytest();
+    if (this.draftDirty) this.writeDraft();
+    if (this.draftTimer !== null) window.clearInterval(this.draftTimer);
+    this.draftTimer = null;
+    if (this.draftFlusher) {
+      window.removeEventListener('beforeunload', this.draftFlusher);
+      document.removeEventListener('visibilitychange', this.draftFlusher);
+      this.draftFlusher = null;
+    }
+    if (this.edgePointerHandler) {
+      window.removeEventListener('mousemove', this.edgePointerHandler);
+      this.edgePointerHandler = null;
+    }
+    this.edgePointer = null;
+    this.dummy?.destroy();
+    this.dummy = null;
+    this.keepCard();
+    this.timelineEl?.remove();
+    this.timelineEl = null;
+    this.timelineCard = null;
+    document.body.classList.remove('g-timeline-left', 'g-timeline-bottom');
   }
 
   private resetState() {
@@ -220,11 +838,29 @@ export class WorldToolScene extends Phaser.Scene {
     this.plannedSpawns = [];
     this.providerControls = null;
     this.mode = 'tilemap';
+    this.stage = 'concept';
+    this.paintTarget = 'tiles';
     this.modeButtons = new Map();
     this.tilesetPanel = null;
     this.worldPanel = null;
+    this.modePanel = null;
+    this.conceptPanel = null;
+    this.tilesetSection = null;
+    this.sceneSection = null;
+    this.palettePanel = null;
     this.scenePanel = null;
     this.sceneImage = null;
+    this.sceneImages = [];
+    this.stripSize = { width: 0, height: 0 };
+    this.timelineEl?.remove();
+    this.timelineEl = null;
+    this.timelineCard = null;
+    this.cardHideTimer = null;
+    this.dummy?.destroy();
+    this.dummy = null;
+    this.crop?.gfx.destroy();
+    this.crop = null;
+    this.activeSegment = 0;
     this.activeScene = null;
     this.mask = [];
     this.maskCell = 16;
@@ -233,9 +869,15 @@ export class WorldToolScene extends Phaser.Scene {
     this.maskVisible = true;
     this.maskGfx = null;
     this.maskPanel = null;
+    this.overlayBtn = null;
     this.maskKindButtons = new Map();
     this.sceneNameInput = null;
+    this.kindRow = null;
+    this.showAllKinds = false;
+    this.onKindPicked = null;
+    this.shapeFriction = null;
     this.brushSel = null;
+    this.tileSizeSel = null;
     this.maskTool = 'freehand';
     this.penAnchor = null;
     this.penPoints = [];
@@ -249,6 +891,9 @@ export class WorldToolScene extends Phaser.Scene {
     this.brushCursor = null;
     this.maskUndo = [];
     this.undoStack = [];
+    this.props = [];
+    this.propImages = [];
+    this.propStamped = false;
     this.toolButtons = new Map();
   }
 
@@ -269,37 +914,73 @@ export class WorldToolScene extends Phaser.Scene {
    * backdrop is only a picture until something says which pixels are solid.
    */
   private buildMaskPanel() {
-    const panel = HudShell.makePanel('04 · COLLISION & ZONES', 'right');
+    const panel = HudShell.makePanel('04 · PAINTING', 'right');
     this.maskPanel = panel;
+
+    // Mixed mode paints two different things; every stroke needs to know
+    // which. TILES hits the grid, ZONES hits the collision layer on top.
+    const targetRow = document.createElement('div');
+    targetRow.className = 'g-row';
+    const targetButtons = new Map<'tiles' | 'zones', GenvyButton>();
+    for (const [id, label] of [
+      ['tiles', 'PAINT TILES'],
+      ['zones', 'PAINT ZONES'],
+    ] as const) {
+      const btn = document.createElement('genvy-button') as GenvyButton;
+      btn.setAttribute('label', label);
+      btn.style.flex = '1 1 50%';
+      btn.onClick(() => {
+        UISound.play('click');
+        this.paintTarget = id;
+        this.endPenPath(true);
+        for (const [otherId, b] of targetButtons) {
+          b.setAttribute('variant', otherId === id ? 'accent' : '');
+        }
+        this.refreshToolsPanel();
+      });
+      targetButtons.set(id, btn);
+      targetRow.appendChild(btn);
+    }
+    targetButtons.get('tiles')?.setAttribute('variant', 'accent');
 
     const kindRow = document.createElement('div');
     kindRow.className = 'g-row';
     kindRow.style.flexWrap = 'wrap';
-    for (const kind of SCENE_MASK_KINDS) {
-      const btn = document.createElement('genvy-button') as GenvyButton;
-      btn.setAttribute('label', kind.label);
-      btn.title = kind.hint;
-      btn.onClick(() => {
-        UISound.play('click');
-        this.maskKind = kind.id;
-        this.tool = 'brush';
-        eraseBtn.setAttribute('variant', '');
-        for (const [id, b] of this.maskKindButtons) {
-          b.setAttribute('variant', id === kind.id ? 'accent' : '');
-        }
-        this.setTool('brush');
-      });
-      this.maskKindButtons.set(kind.id, btn);
-      kindRow.appendChild(btn);
+    this.kindRow = kindRow;
+    this.onKindPicked = () => eraseBtn.setAttribute('variant', '');
+    this.renderKindRow();
+
+    // Friction rides on SHAPES, not cells: a cell holds one id and nothing
+    // else, while a traced ramp can say how slippery that particular ramp is.
+    const frictionSel = document.createElement('select');
+    for (const [value, label] of [
+      ['', 'DEFAULT FOR THE LAYER'],
+      ['0.1', 'ICE · 0.1'],
+      ['0.4', 'SLICK · 0.4'],
+      ['0.7', 'LOOSE · 0.7'],
+      ['1', 'NORMAL · 1.0'],
+      ['1.4', 'GRIPPY · 1.4'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      frictionSel.appendChild(opt);
     }
+    frictionSel.addEventListener('change', () => {
+      UISound.play('click');
+      this.shapeFriction = frictionSel.value === '' ? null : Number(frictionSel.value);
+    });
+    const frictionField = field('SURFACE FRICTION (SHAPES)', frictionSel);
 
     // Brush size in MASK CELLS, so it means the same thing at any zoom.
     const brushSel = document.createElement('select');
     for (const [size, label] of [
       [1, '1 CELL · FINE'],
-      [2, '3x3 CELLS'],
-      [4, '7x7 CELLS'],
-      [8, '15x15 · BROAD'],
+      [2, '2 CELLS'],
+      [3, '3 CELLS'],
+      [5, '5 CELLS'],
+      [8, '8 CELLS'],
+      [12, '12 CELLS · BROAD'],
     ] as const) {
       const opt = document.createElement('option');
       opt.value = String(size);
@@ -351,6 +1032,7 @@ export class WorldToolScene extends Phaser.Scene {
       ['rect', '▭', 'RECTANGLE — drag a box (vector)'],
       ['triangle', '△', 'TRIANGLE — drag toward where the tip should point (vector)'],
       ['circle', '◯', 'CIRCLE — drag from the centre (vector)'],
+      ['fill', '▨', 'FILL — flood a connected region'],
     ] as const) {
       const btn = document.createElement('genvy-button') as GenvyButton;
       btn.classList.add('g-icon');
@@ -383,22 +1065,20 @@ export class WorldToolScene extends Phaser.Scene {
           VECTOR_TOOLS.includes(this.maskTool)
             ? 'CLICK A SHAPE TO DELETE IT'
             : 'PAINTS CELLS EMPTY INSTEAD OF FILLING THEM',
+          7500,
         );
       } else {
-        this.showToolHint(this.maskTool, 2500);
+        this.showToolHint(this.maskTool, 6500);
       }
     });
 
     // One word, two states: struck through when the overlay is hidden.
     const showBtn = document.createElement('genvy-button') as GenvyButton;
     showBtn.setAttribute('label', 'OVERLAY');
+    this.overlayBtn = showBtn;
     showBtn.onClick(() => {
       UISound.play('click');
-      this.maskVisible = !this.maskVisible;
-      if (this.maskVisible) showBtn.removeAttribute('data-off');
-      else showBtn.setAttribute('data-off', '');
-      this.maskGfx?.setVisible(this.mode === 'scene' && this.maskVisible);
-      this.shapeGfx?.setVisible(this.mode === 'scene' && this.maskVisible);
+      this.setOverlayVisible(!this.maskVisible);
     });
 
     const clearBtn = document.createElement('genvy-button') as GenvyButton;
@@ -412,6 +1092,7 @@ export class WorldToolScene extends Phaser.Scene {
       this.endPenPath(true);
       this.drawMask();
       this.drawShapes();
+      this.draftDirty = true;
       HudShell.toast('MASK AND SHAPES CLEARED');
     });
 
@@ -420,6 +1101,7 @@ export class WorldToolScene extends Phaser.Scene {
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
     nameInput.placeholder = 'SCENE NAME';
+    nameInput.addEventListener('input', () => (this.draftDirty = true));
     this.sceneNameInput = nameInput;
 
     const saveBtn = document.createElement('genvy-button') as GenvyButton;
@@ -435,19 +1117,147 @@ export class WorldToolScene extends Phaser.Scene {
     }
 
 
+    const backBtn = document.createElement('genvy-button') as GenvyButton;
+    backBtn.setAttribute('label', '✎ EDIT CONCEPT');
+    backBtn.title = 'Back to step 1: mode, texts, view and canvas';
+    backBtn.onClick(() => {
+      UISound.play('click');
+      this.setStage('concept');
+    });
+
+    const nameField = field('SCENE NAME', nameInput);
+    const kindField = field('PAINT AS', kindRow);
+    const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
-      field('SCENE NAME', nameInput),
+      backBtn,
+      targetRow,
+      nameField,
       saveBtn,
-      field('PAINT AS', kindRow),
+      kindField,
       field('TOOL', penRow),
+      frictionField,
       field('BRUSH SIZE', brushSel),
-      field('MASK RESOLUTION', cellSel),
+      cellField,
       toolRow,
       clearBtn,
     );
-    // Solid is the default: it is what most of a level needs.
-    this.maskKindButtons.get(1)?.setAttribute('variant', 'accent');
+    // Which sections belong only to ZONE painting: in tile modes the panel
+    // keeps just the tools, the brush size and the eraser — the rest of the
+    // painting experience is identical between the two crafts.
+    for (const el of [nameField, saveBtn, kindField, frictionField, cellField, showBtn, clearBtn]) {
+      if (el instanceof HTMLElement) el.dataset.zones = '1';
+    }
+    targetRow.dataset.mixed = '1';
+    this.refreshToolsPanel();
     return panel;
+  }
+
+  /**
+   * Build the PAINT AS row for the open scene's view.
+   *
+   * A side-scroller is authored as negative space (paint what blocks); a
+   * top-down or isometric map is the opposite — the walkable path is a sliver
+   * of the image, so painting where actors MAY go beats fencing off
+   * everything they may not. Offering one fixed list forced the wrong one of
+   * those on half the scenes, so the roster follows the view, with every
+   * layer still one click away.
+   */
+  private renderKindRow() {
+    const row = this.kindRow;
+    if (!row) return;
+    row.replaceChildren();
+    // Square glyphs, like the tool bar: a dozen word-buttons do not fit a
+    // panel column, and each one's name is a tooltip and a toast away.
+    row.className = 'g-icon-row';
+    this.maskKindButtons.clear();
+    const view = this.activeScene?.view ?? 'side';
+    const kinds = this.showAllKinds ? [...SCENE_MASK_KINDS] : maskKindsForView(view);
+    // Keep the armed layer valid when the view narrows the list.
+    if (!kinds.some((k) => k.id === this.maskKind)) this.maskKind = kinds[0]?.id ?? 1;
+
+    for (const kind of kinds) {
+      const btn = document.createElement('genvy-button') as GenvyButton;
+      btn.classList.add('g-icon');
+      btn.setAttribute('label', kind.icon);
+      btn.title = `${kind.label} — ${kind.hint}`;
+      // The layer's own colour, so the row reads as the palette it is.
+      btn.style.setProperty('--g-kind', kind.color);
+      btn.onClick(() => {
+        UISound.play('click');
+        this.maskKind = kind.id;
+        this.tool = 'brush';
+        this.onKindPicked?.();
+        for (const [id, b] of this.maskKindButtons) {
+          b.setAttribute('variant', id === kind.id ? 'accent' : '');
+        }
+        this.setTool('brush');
+        HudShell.toast(`${kind.label} · ${kind.hint.toUpperCase()}`);
+      });
+      this.maskKindButtons.set(kind.id, btn);
+      row.appendChild(btn);
+    }
+
+    // A word button, kept out of the glyph row so the grid stays even.
+    const more = document.createElement('genvy-button') as GenvyButton;
+    more.style.flexBasis = '100%';
+    more.setAttribute('label', this.showAllKinds ? `LAYERS FOR ${view.toUpperCase()}` : 'ALL LAYERS');
+    more.title = 'Show every layer, or only the ones this view usually needs';
+    more.onClick(() => {
+      UISound.play('click');
+      this.showAllKinds = !this.showAllKinds;
+      this.renderKindRow();
+    });
+    row.appendChild(more);
+    this.maskKindButtons.get(this.maskKind)?.setAttribute('variant', 'accent');
+  }
+
+  /** Edit stage, tile modes: the picker, and the way back to the words. */
+  private buildPalettePanel() {
+    const panel = HudShell.makePanel('01 · TILES', 'left');
+    this.palettePanel = panel;
+
+    const editBtn = document.createElement('genvy-button') as GenvyButton;
+    editBtn.setAttribute('label', '✎ EDIT CONCEPT');
+    editBtn.title = 'Back to step 1: rewrite the texts, re-forge the sheet';
+    this.editTextsBtn = editBtn;
+    editBtn.onClick(() => {
+      const ts = this.tileset;
+      UISound.play('click');
+      if (ts && this.conceptFields) {
+        // Seed from the SAVED asset so edits apply to what is on disk.
+        this.conceptNameIn.value = ts.name;
+        this.conceptPromptIn.value = ts.description;
+        this.conceptTilesIn.value = ts.tiles.map((t) => t.name).join('\n');
+        this.conceptFields.style.display = '';
+        for (const el of [this.conceptPromptIn, this.conceptTilesIn]) autoGrow.refresh(el);
+      }
+      this.setStage('concept');
+    });
+
+    const hint = document.createElement('div');
+    hint.className = 'g-hint';
+    hint.textContent = 'CLICK A TILE TO PAINT WITH IT. RIGHT-CLICK TOGGLES COLLISION (RED DOT).';
+
+    this.paletteHost = document.createElement('div');
+    panel.append(editBtn, hint, this.paletteHost);
+    return panel;
+  }
+
+  /**
+   * The painting panel serves BOTH crafts now: in tile modes it keeps only
+   * what paints tiles (tools, brush size, eraser); the zone-only sections —
+   * layers, friction, mask resolution, saving the scene — stay for painted
+   * work. Mixed mode adds the switch saying which of the two a stroke hits.
+   */
+  private refreshToolsPanel() {
+    const panel = this.maskPanel;
+    if (!panel) return;
+    panel.querySelectorAll<HTMLElement>('[data-zones]').forEach((el) => {
+      el.style.display = this.paintingZones ? '' : 'none';
+    });
+    panel.querySelectorAll<HTMLElement>('[data-mixed]').forEach((el) => {
+      el.style.display = this.mode === 'mixed' ? '' : 'none';
+    });
   }
 
   /** Mode switch: a tilemap level and a painted scene are different crafts. */
@@ -458,6 +1268,7 @@ export class WorldToolScene extends Phaser.Scene {
     for (const [mode, label] of [
       ['tilemap', 'TILEMAP'],
       ['scene', 'PAINTED'],
+      ['mixed', 'MIXED'],
     ] as const) {
       const btn = document.createElement('genvy-button') as GenvyButton;
       btn.setAttribute('label', label);
@@ -468,47 +1279,76 @@ export class WorldToolScene extends Phaser.Scene {
       this.modeButtons.set(mode, btn);
       row.appendChild(btn);
     }
-    const hint = document.createElement('div');
-    hint.className = 'g-hint';
-    hint.textContent =
-      'TILEMAP: A GRID YOU PAINT, WITH COLLISION AND AUTOTILING. ' +
-      'PAINTED SCENE: ONE BACKDROP IMAGE FOR ADVENTURE, ISOMETRIC OR PLATFORM GAMES.';
-    panel.append(row, hint);
+    panel.append(row);
     return panel;
   }
 
-  private setMode(mode: 'tilemap' | 'scene') {
+  private setMode(mode: 'tilemap' | 'scene' | 'mixed') {
     this.mode = mode;
+    // Mixed starts on tiles: the backdrop goes in first, zones come after.
+    if (mode !== 'mixed') this.paintTarget = mode === 'scene' ? 'zones' : 'tiles';
     for (const [id, btn] of this.modeButtons) {
       btn.setAttribute('variant', id === mode ? 'accent' : '');
     }
-    // Only the active mode's panels are on screen; the stage clears so one
-    // mode's artwork never lingers under the other's controls.
-    if (this.tilesetPanel) HudShell.hidePanel(this.tilesetPanel);
-    if (this.worldPanel) HudShell.hidePanel(this.worldPanel);
-    if (this.scenePanel) HudShell.hidePanel(this.scenePanel.panel);
-    if (this.maskPanel) HudShell.hidePanel(this.maskPanel);
-    // Hide, never destroy: switching modes must not throw away a painted map
-    // or a loaded scene. Each mode simply shows its own world.
-    const tilemapVisible = mode === 'tilemap';
-    for (const layer of this.layers) layer.setVisible(tilemapVisible);
-    this.gridGfx?.setVisible(tilemapVisible);
-    this.sceneImage?.setVisible(!tilemapVisible);
-    this.maskGfx?.setVisible(!tilemapVisible && this.maskVisible);
-    this.shapeGfx?.setVisible(!tilemapVisible && this.maskVisible);
-    // The pen ring belongs to the mask; it must not hover over a tilemap.
+    this.refreshStage();
+  }
+
+  private setStage(stage: 'concept' | 'edit') {
+    this.stage = stage;
+    this.refreshStage();
+  }
+
+  /**
+   * One choreography for (stage x mode): which panels are up, which world
+   * objects are visible. Hide, never destroy — switching must not throw away
+   * a painted map or a loaded scene.
+   */
+  private refreshStage() {
+    for (const panel of [this.conceptPanel, this.worldPanel, this.maskPanel, this.palettePanel]) {
+      if (panel) HudShell.hidePanel(panel);
+    }
+
+    const concept = this.stage === 'concept';
+    // Step 1 owns the screen: the page scrolls behind a pinned canvas, the
+    // panel sits centred and wide, exactly like the sprite forge's opening.
+    document.body.classList.toggle('g-page-scroll', concept);
+    if (concept) {
+      if (this.conceptPanel) {
+        HudShell.showPanel(this.conceptPanel, 'center');
+        this.conceptPanel.style.width = 'min(720px, 90vw)';
+      }
+      if (this.tilesetSection) this.tilesetSection.style.display = this.tilesActive ? '' : 'none';
+      if (this.sceneSection) this.sceneSection.style.display = this.sceneActive ? '' : 'none';
+    } else {
+      if (this.tilesActive && this.palettePanel) HudShell.showPanel(this.palettePanel, 'left');
+      if (this.tilesActive && this.worldPanel) HudShell.showPanel(this.worldPanel, 'right');
+      if (this.maskPanel) HudShell.showPanel(this.maskPanel, 'right');
+      this.refreshToolsPanel();
+    }
+
+    // World objects. In mixed the backdrop sits BEHIND the tile layers.
+    const showTiles = this.tilesActive && !concept;
+    const showScene = this.sceneActive && !concept;
+    for (const layer of this.layers) layer.setVisible(showTiles);
+    for (const img of this.propImages) img.setVisible(showTiles);
+    this.gridGfx?.setVisible(showTiles);
+    for (const img of this.sceneImages) {
+      img.setVisible(showScene);
+      img.setDepth(this.mode === 'mixed' ? -5 : 0);
+    }
+    this.maskGfx?.setVisible(showScene && this.maskVisible);
+    this.shapeGfx?.setVisible(showScene && this.maskVisible);
+
+    if (!this.sceneActive) {
+      this.dummy?.destroy();
+      this.dummy = null;
+      this.exitPlaytest();
+    }
     this.brushCursor?.clear();
     this.endPenPath(true);
+    this.renderTimeline();
     HudShell.hideKeyHint();
     this.restoreCursor();
-
-    if (tilemapVisible) {
-      if (this.tilesetPanel) HudShell.showPanel(this.tilesetPanel, 'left');
-      if (this.worldPanel) HudShell.showPanel(this.worldPanel, 'right');
-    } else {
-      if (this.scenePanel) HudShell.showPanel(this.scenePanel.panel, 'left');
-      if (this.maskPanel) HudShell.showPanel(this.maskPanel, 'right');
-    }
   }
 
   // ---------------- Scene collision mask ----------------
@@ -559,21 +1399,26 @@ export class WorldToolScene extends Phaser.Scene {
         x = end;
       }
     }
-    g.setVisible(this.mode === 'scene' && this.maskVisible);
+    g.setVisible(this.sceneActive && this.maskVisible);
     this.maskGfx = g;
   }
 
   /** Stamp one round brush dab centred on a mask cell. */
   private stampMask(cx: number, cy: number, value: number): boolean {
-    const r = this.brushSize - 1;
-    // Round nib, not a square block: a square brush cannot follow a slope
-    // cleanly, which is most of what collision painting actually is.
-    const rr = (r + 0.5) * (r + 0.5);
+    // brushSize is the DIAMETER in cells, stepping by one — an even size
+    // centres between cells, which is why the centre is fractional.
+    const d = this.brushSize;
+    const off = (d - 1) / 2;
+    const rr = (d / 2) * (d / 2) + 0.01;
     let changed = false;
-    for (let y = cy - r; y <= cy + r; y++) {
-      for (let x = cx - r; x <= cx + r; x++) {
+    for (let y = cy - Math.floor(off); y <= cy + Math.ceil(off); y++) {
+      for (let x = cx - Math.floor(off); x <= cx + Math.ceil(off); x++) {
         if (y < 0 || x < 0 || y >= this.mask.length || x >= this.mask[0]!.length) continue;
-        if (r > 0 && (x - cx) * (x - cx) + (y - cy) * (y - cy) > rr) continue;
+        // Round nib, not a square block: a square brush cannot follow a
+        // slope cleanly, which is most of what collision painting is.
+        const dx = x - (cx - Math.floor(off) + off);
+        const dy = y - (cy - Math.floor(off) + off);
+        if (dx * dx + dy * dy > rr) continue;
         if (this.mask[y]![x] === value) continue;
         this.mask[y]![x] = value;
         changed = true;
@@ -621,19 +1466,67 @@ export class WorldToolScene extends Phaser.Scene {
    * rather than a shaky freehand drag. ESC or right-click ends the path.
    */
   private penClick(pointer: Phaser.Input.Pointer) {
-    const raw = this.maskCellAt(pointer);
+    const raw = this.paintCellAt(pointer);
     if (!raw) return;
     const cell = this.constrainAxis(this.penAnchor, raw);
-    const value = this.maskValue();
-    if (this.penAnchor) {
+    if (this.paintingZones) {
+      const value = this.maskValue();
       this.pushMaskUndo();
-      if (this.strokeBetween(this.penAnchor, cell, value)) this.drawMask();
+      const changed = this.penAnchor
+        ? this.strokeBetween(this.penAnchor, cell, value)
+        : this.stampMask(cell.x, cell.y, value);
+      if (changed) {
+        this.drawMask();
+        this.draftDirty = true;
+      }
     } else {
-      this.pushMaskUndo();
-      if (this.stampMask(cell.x, cell.y, value)) this.drawMask();
+      // The same segment pen, writing TILES: a floor is two clicks here too.
+      this.pushUndo();
+      const from = this.penAnchor ?? cell;
+      const steps = Math.max(Math.abs(cell.x - from.x), Math.abs(cell.y - from.y));
+      for (let i = 0; i <= steps; i++) {
+        const t = steps === 0 ? 0 : i / steps;
+        this.stampTiles(
+          Math.round(from.x + (cell.x - from.x) * t),
+          Math.round(from.y + (cell.y - from.y) * t),
+        );
+      }
+      this.draftDirty = true;
     }
     this.penAnchor = cell;
     UISound.play('click');
+  }
+
+  /** ALT+click for the path pen: let go of the anchor without ending anything. */
+  private dropPenAnchor() {
+    if (!this.penAnchor) return;
+    this.penAnchor = null;
+    UISound.play('click');
+    HudShell.toast('ANCHOR DROPPED — NEXT CLICK STARTS FRESH');
+  }
+
+  /**
+   * ALT+click for the shape pen: delete the outline point under the cursor.
+   * Uses the same screen-constant tolerance as closing, so a point is as
+   * easy to remove as point 1 is to hit.
+   */
+  private deletePenPoint(pointer: Phaser.Input.Pointer) {
+    if (this.penPoints.length === 0) return;
+    const at = this.pixelAt(pointer);
+    const reach = this.closeTolerance() * 1.5;
+    let nearest = -1;
+    let best = reach;
+    for (let i = 0; i < this.penPoints.length; i++) {
+      const d = Math.hypot(this.penPoints[i]!.x - at.x, this.penPoints[i]!.y - at.y);
+      if (d <= best) {
+        best = d;
+        nearest = i;
+      }
+    }
+    if (nearest < 0) return;
+    this.penPoints.splice(nearest, 1);
+    UISound.play('click');
+    if (this.penPoints.length === 0) HudShell.toast('OUTLINE CLEARED');
   }
 
   /** Drop the pen's open path (ESC, right-click, tool or mode change). */
@@ -665,6 +1558,94 @@ export class WorldToolScene extends Phaser.Scene {
       : { x: from.x, y: p.y };
   }
 
+  /** Flood a connected region of whatever the stroke targets. */
+  private floodAt(pointer: Phaser.Input.Pointer) {
+    const cell = this.paintCellAt(pointer);
+    if (!cell) return;
+    if (this.paintingZones) {
+      const value = this.maskValue();
+      const from = this.mask[cell.y]?.[cell.x];
+      if (from === undefined || from === value) return;
+      this.pushMaskUndo();
+      const stack = [cell];
+      while (stack.length > 0) {
+        const { x, y } = stack.pop()!;
+        if (this.mask[y]?.[x] !== from) continue;
+        this.mask[y]![x] = value;
+        stack.push({ x: x + 1, y }, { x: x - 1, y }, { x, y: y + 1 }, { x, y: y - 1 });
+      }
+      this.drawMask();
+    } else {
+      const layer = this.layers[this.activeLayer];
+      if (!layer) return;
+      this.pushUndo();
+      this.floodFill(layer, cell.x, cell.y, this.tool === 'erase' ? -1 : this.selectedTile);
+    }
+    this.draftDirty = true;
+    UISound.play('confirm');
+  }
+
+  /** Cell size of whatever the stroke is writing: mask cells, or tiles. */
+  private paintCellSize(): number {
+    return this.paintingZones ? this.maskCell : this.tileset?.tileWidth ?? 32;
+  }
+
+  /** The cell under the pointer in the CURRENT target's grid, or null. */
+  private paintCellAt(pointer: Phaser.Input.Pointer): { x: number; y: number } | null {
+    if (this.paintingZones) return this.maskCellAt(pointer);
+    if (!this.map || !this.tileset) return null;
+    const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const tx = Math.floor(world.x / this.tileset.tileWidth);
+    const ty = Math.floor(world.y / this.tileset.tileHeight);
+    if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return null;
+    return { x: tx, y: ty };
+  }
+
+  /** Stamp the brush-sized block of tiles (no prop stretch — pen strokes). */
+  private stampTiles(tx: number, ty: number) {
+    const layer = this.layers[this.activeLayer];
+    if (!layer || !this.map) return;
+    const off = Math.floor((this.brushSize - 1) / 2);
+    for (let dy = -off; dy <= this.brushSize - 1 - off; dy++) {
+      for (let dx = -off; dx <= this.brushSize - 1 - off; dx++) {
+        const x = tx + dx;
+        const y = ty + dy;
+        if (x < 0 || y < 0 || x >= this.map.width || y >= this.map.height) continue;
+        if (this.tool === 'erase') layer.removeTileAt(x, y);
+        else layer.putTileAt(this.selectedTile, x, y);
+      }
+    }
+  }
+
+  /**
+   * Rasterize a traced outline (image pixels) into tiles. The same polygon
+   * fill the zones use, aimed at the tile grid: trace a hill with the shape
+   * pen and it comes back as terrain, not as a mask.
+   */
+  private rasterizePolygonToTiles(points: { x: number; y: number }[]) {
+    const layer = this.layers[this.activeLayer];
+    const ts = this.tileset;
+    const map = this.map;
+    if (!layer || !map || !ts || points.length < 3) return;
+    this.pushUndo();
+    const grid = Array.from({ length: map.height }, () =>
+      Array.from({ length: map.width }, () => 0),
+    );
+    fillMaskPolygon(
+      grid,
+      points.map((pt) => ({ x: pt.x / ts.tileWidth, y: pt.y / ts.tileHeight })),
+      1,
+    );
+    for (let y = 0; y < grid.length; y++) {
+      for (let x = 0; x < grid[y]!.length; x++) {
+        if (grid[y]![x] !== 1) continue;
+        if (this.tool === 'erase') layer.removeTileAt(x, y);
+        else layer.putTileAt(this.selectedTile, x, y);
+      }
+    }
+    this.draftDirty = true;
+  }
+
   /** The exact image-pixel point under the cursor — no grid snapping. */
   private pixelAt(pointer: Phaser.Input.Pointer): { x: number; y: number } {
     const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
@@ -694,18 +1675,22 @@ export class WorldToolScene extends Phaser.Scene {
    * geometry is ragged at every grid size.
    */
   private shapeClick(pointer: Phaser.Input.Pointer) {
-    if (!this.sceneImage) return;
+    if (this.paintingZones ? !this.sceneImage : !this.map) return;
     const p = this.constrainAxis(
       this.penPoints[this.penPoints.length - 1] ?? null,
       this.pixelAt(pointer),
     );
     if (this.closesShape(p)) {
-      this.commitShape({
-        id: `sh_${Date.now().toString(36)}`,
-        kind: this.maskKind,
-        type: 'polygon',
-        points: this.penPoints.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })),
-      });
+      if (this.paintingZones) {
+        this.commitShape({
+          id: `sh_${Date.now().toString(36)}`,
+          kind: this.maskKind,
+          type: 'polygon',
+          points: this.penPoints.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })),
+        });
+      } else {
+        this.rasterizePolygonToTiles(this.penPoints);
+      }
       this.penPoints = [];
       UISound.play('confirm');
       HudShell.toast('SHAPE CLOSED', 'success');
@@ -719,8 +1704,10 @@ export class WorldToolScene extends Phaser.Scene {
   /** Add a finished vector shape, undoably. */
   private commitShape(shape: SceneShape) {
     this.pushMaskUndo();
+    if (this.shapeFriction !== null) shape.friction = this.shapeFriction;
     this.shapes.push(shape);
     this.drawShapes();
+    this.draftDirty = true;
   }
 
   /**
@@ -729,15 +1716,16 @@ export class WorldToolScene extends Phaser.Scene {
    * panel used to carry — nobody reads a paragraph, and the paragraph was
    * describing six tools at once when only one of them is ever armed.
    */
-  private showToolHint(tool: MaskTool, ms = 5000) {
+  private showToolHint(tool: MaskTool, ms = 9000) {
+    // An uncaptioned key gets NO caption element: an empty one still holds
+    // its line height, which pushed the arrow keypad's rows apart.
     const key = (glyph: string, caption: string, on = false) =>
       `<div class="pair"><div class="key${glyph.length > 2 ? ' wide' : ''}${on ? ' on' : ''}">` +
-      `${glyph}</div><div class="cap">${caption}</div></div>`;
+      `${glyph}</div>${caption ? `<div class="cap">${caption}</div>` : ''}</div>`;
     const row = (...keys: string[]) => `<div class="row">${keys.join('')}</div>`;
-
-    // Every tool shares the view and history keys, so they sit on one row of
-    // their own rather than being re-learned per tool.
-    const common = row(key('SPACE', 'PAN'), key('CTRL+Z', 'UNDO'));
+    // The arrow keys are a picture of a keypad, so they stay clustered while
+    // captioned keys spread across the card.
+    const cluster = (...keys: string[]) => `<div class="row cluster">${keys.join('')}</div>`;
 
     const SPECIFIC: Record<MaskTool, { art: string; msg: string }> = {
       freehand: {
@@ -745,11 +1733,11 @@ export class WorldToolScene extends Phaser.Scene {
         msg: 'DRAG TO PAINT MASK CELLS',
       },
       line: {
-        art: row(key('SHIFT', 'STRAIGHT'), key('ESC', 'END PATH')),
+        art: row(key('SHIFT', 'STRAIGHT'), key('ALT', 'DROP PT'), key('ESC', 'END PATH')),
         msg: 'CLICK POINT TO POINT ALONG AN EDGE',
       },
       shape: {
-        art: row(key('SHIFT', 'STRAIGHT'), key('ESC', 'CANCEL')),
+        art: row(key('SHIFT', 'STRAIGHT'), key('ALT', 'DELETE PT'), key('ESC', 'CANCEL')),
         msg: 'TRACE AN OUTLINE · CLICK POINT 1 TO CLOSE IT',
       },
       rect: {
@@ -758,8 +1746,8 @@ export class WorldToolScene extends Phaser.Scene {
       },
       triangle: {
         art:
-          row(key('↑', '', this.triangleDir === 'up')) +
-          row(
+          cluster(key('↑', '', this.triangleDir === 'up')) +
+          cluster(
             key('←', '', this.triangleDir === 'left'),
             key('↓', '', this.triangleDir === 'down'),
             key('→', '', this.triangleDir === 'right'),
@@ -770,9 +1758,13 @@ export class WorldToolScene extends Phaser.Scene {
         art: row(key('◯', 'DRAG OUT')),
         msg: 'DRAG FROM THE CENTRE TO THE EDGE',
       },
+      fill: {
+        art: row(key('▨', 'CLICK')),
+        msg: 'CLICK A REGION TO FLOOD IT — THE ERASER FLOODS IT EMPTY',
+      },
     };
     const { art, msg } = SPECIFIC[tool];
-    HudShell.keyHint(art + common, msg, ms);
+    HudShell.keyHint(art, msg, ms);
   }
 
   /** Build the primitive a drag describes, or null when it is too small. */
@@ -825,6 +1817,7 @@ export class WorldToolScene extends Phaser.Scene {
       this.pushMaskUndo();
       this.shapes.splice(i, 1);
       this.drawShapes();
+      this.draftDirty = true;
       UISound.play('click');
       HudShell.toast('SHAPE DELETED');
       return true;
@@ -848,7 +1841,7 @@ export class WorldToolScene extends Phaser.Scene {
       const color = Number(`0x${(kind?.color ?? '#ffffff').slice(1)}`);
       this.paintShape(g, dragged, color, 0.25);
     }
-    g.setVisible(this.mode === 'scene' && this.maskVisible);
+    g.setVisible(this.sceneActive && this.maskVisible);
     this.shapeGfx = g;
   }
 
@@ -897,7 +1890,10 @@ export class WorldToolScene extends Phaser.Scene {
       changed = true;
     }
     this.lastMaskCell = cell;
-    if (changed) this.drawMask();
+    if (changed) {
+      this.drawMask();
+      this.draftDirty = true;
+    }
   }
 
   /**
@@ -923,6 +1919,8 @@ export class WorldToolScene extends Phaser.Scene {
         },
       });
       this.activeScene = saved;
+      clearDraft(`world:scene:${saved.id}`);
+      this.draftDirty = false;
       this.scenePanel?.refresh();
       await collection.refresh();
       UISound.play('confirm');
@@ -934,30 +1932,585 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /** Put a painted scene on the stage, fitted to the viewport. */
+  /**
+   * Put a scene on the stage as a STRIP.
+   *
+   * A looping level is not one image shown twice — it is a run of panels the
+   * camera travels along, and the editor has to show the run, because that is
+   * what the seams between panels look like in play. A scene with no strip is
+   * a strip of one, so there is only ever one code path here.
+   */
   private async displayScene(scene: Scene) {
-    const key = `scene:${scene.id}:${Date.now()}`;
+    const segments = sceneSegments(scene);
+    const stamp = Date.now();
     await new Promise<void>((resolve, reject) => {
-      this.load.image(key, `${fileUrl(scene.image)}?t=${Date.now()}`);
+      segments.forEach((seg, i) => {
+        this.load.image(`scene:${scene.id}:${i}:${stamp}`, `${fileUrl(seg.image)}?t=${stamp}`);
+      });
       this.load.once(Phaser.Loader.Events.COMPLETE, () => resolve());
       this.load.once(Phaser.Loader.Events.FILE_LOAD_ERROR, () => reject(new Error('scene load failed')));
       this.load.start();
     });
+
+    for (const img of this.sceneImages) img.destroy();
+    this.sceneImages = [];
     this.sceneImage?.destroy();
-    // Top-left at the world origin, exactly like the tilemap: the mask
-    // overlay then shares one coordinate space with the art, and the two
-    // modes cannot drift apart on screen.
-    const img = this.add.image(0, 0, key).setOrigin(0, 0);
-    this.sceneImage = img;
     this.activeScene = scene;
+
+    // Panel 1 sits at the world origin, exactly like the tilemap, so the mask
+    // and the art share one coordinate space and cannot drift apart.
+    const vertical = scene.loop === 'vertical';
+    let offset = 0;
+    segments.forEach((seg, i) => {
+      const img = this.add
+        .image(vertical ? 0 : offset, vertical ? offset : 0, `scene:${scene.id}:${i}:${stamp}`)
+        .setOrigin(0, 0);
+      // Mirroring is applied about the panel's own box, so a flipped panel
+      // still occupies exactly its own slot in the strip.
+      img.setFlip(seg.flipX, seg.flipY);
+      this.sceneImages.push(img);
+      offset += vertical ? img.height : img.width;
+      if (i === 0) this.sceneImage = img;
+    });
+
+    const width = vertical
+      ? Math.max(...this.sceneImages.map((i) => i.width), 1)
+      : offset;
+    const height = vertical ? offset : Math.max(...this.sceneImages.map((i) => i.height), 1);
+    this.stripSize = { width, height };
+
     if (this.sceneNameInput) this.sceneNameInput.value = scene.name;
+    if (this.stage !== 'edit') this.setStage('edit');
+    this.renderKindRow(); // a top-down scene needs different layers than a side one
     this.scenePanel?.refresh();
-    this.initMask(scene, img.width, img.height);
+    this.renderTimeline();
+    // The mask spans the WHOLE strip: collision does not stop at panel 1.
+    this.initMask(scene, width, height);
+    this.restoreSceneDraft();
+    this.frameStrip();
+  }
+
+  /** Which way the timeline runs, or null when the scene does not loop. */
+  private timelineAxis(): 'horizontal' | 'vertical' | null {
+    const loop = this.activeScene?.loop ?? 'none';
+    if (loop === 'none') return null;
+    // The band runs along the axis the level repeats on: a horizontal level
+    // reads as a band under the stage, a tower as a column beside it.
+    return loop === 'horizontal' ? 'horizontal' : 'vertical';
+  }
+
+  /**
+   * The strip timeline: one cell per panel, in travel order, like a video
+   * editor's track. A looping level is authored by ARRANGING panels, so the
+   * arrangement has to be visible and directly editable — duplicating a panel
+   * mirrored is free, and is how a two-render strip becomes a long level
+   * without paying for every screen of it.
+   */
+  private renderTimeline() {
+    const axis = this.timelineAxis();
+    const scene = this.activeScene;
+    // The band is a ROW (or a column) of the app layout: these classes inset
+    // the canvas and the docks so nothing is covered by it.
+    const on = axis !== null && this.sceneActive && this.stage === 'edit';
+    document.body.classList.toggle('g-timeline-left', on && axis === 'vertical');
+    document.body.classList.toggle('g-timeline-bottom', on && axis === 'horizontal');
+    if (!axis || !scene || !this.sceneActive || this.stage !== 'edit') {
+      this.timelineEl?.remove();
+      this.timelineEl = null;
+      this.timelineCard = null;
+      return;
+    }
+    if (!this.timelineEl) {
+      const el = document.createElement('div');
+      el.id = 'genvy-timeline';
+      // On #app, not #hud-root: the HUD is inset AROUND the band, so a child
+      // of it could not occupy the band's own row.
+      document.getElementById('app')?.appendChild(el);
+      this.timelineEl = el;
+    }
+    const el = this.timelineEl;
+    el.className = axis === 'vertical' ? 'vertical' : 'horizontal';
+    el.replaceChildren();
+
+    const segments = sceneSegments(scene);
+    const track = document.createElement('div');
+    track.className = 'g-tl-track';
+    for (let i = 0; i < segments.length; i++) {
+      track.appendChild(this.timelineCell(segments[i]!, i, segments.length));
+    }
+
+    // The tail cell adds a panel: a mirrored copy, which costs nothing.
+    const add = document.createElement('div');
+    add.className = 'g-tl-cell g-tl-add';
+    add.title = 'Duplicate the last panel, mirrored — free, no render';
+    add.textContent = '+';
+    add.addEventListener('click', () => {
+      UISound.play('click');
+      void this.addSegment(segments.length - 1, true);
+    });
+    track.appendChild(add);
+    el.appendChild(track);
+
+    // The strip's own padding, as a hover target in the band's colour: the
+    // pointer has to cross it to reach the tab, and crossing dead space would
+    // close the tab under the cursor.
+    const bridge = document.createElement('div');
+    bridge.className = 'g-tl-bridge';
+    bridge.addEventListener('pointerenter', () => this.keepCard());
+    bridge.addEventListener('pointerleave', () => this.scheduleHideCard());
+    el.appendChild(bridge);
+
+    // The hover card lives on the BAND. Inside the track it was invisible: a
+    // scrolling box clips anything positioned outside itself, and the card is
+    // positioned outside itself by design.
+    const card = document.createElement('div');
+    card.className = 'g-tl-actions';
+    card.addEventListener('pointerenter', () => this.keepCard());
+    card.addEventListener('pointerleave', () => this.scheduleHideCard());
+    el.appendChild(card);
+    this.timelineCard = card;
+  }
+
+  /** Cancel a pending dismissal — the pointer is still somewhere it belongs. */
+  private keepCard() {
+    if (this.cardHideTimer !== null) {
+      window.clearTimeout(this.cardHideTimer);
+      this.cardHideTimer = null;
+    }
+  }
+
+  /**
+   * Dismiss the tab shortly, unless the pointer lands on the panel, the
+   * bridge or the tab itself first. A grace period, rather than geometry:
+   * every route between those three is then safe, whatever the layout.
+   */
+  private scheduleHideCard() {
+    this.keepCard();
+    this.cardHideTimer = window.setTimeout(() => {
+      this.timelineCard?.classList.remove('visible');
+      this.cardHideTimer = null;
+    }, 140);
+  }
+
+  /** Fill the hover card with one panel's actions and place it beside it. */
+  private showPanelActions(cell: HTMLElement, index: number, total: number) {
+    const card = this.timelineCard;
+    const band = this.timelineEl;
+    if (!card || !band) return;
+    card.replaceChildren();
+    const act = (glyph: string, title: string, fn: () => void) => {
+      const b = document.createElement('button');
+      b.textContent = glyph;
+      b.title = title;
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        UISound.play('click');
+        card.classList.remove('visible');
+        fn();
+      });
+      card.appendChild(b);
+    };
+    act('⧉', 'Duplicate this panel — free, no render', () => void this.addSegment(index, false));
+    act('⇋', 'Mirror this panel horizontally', () => this.flipSegment(index, 'x'));
+    act('⇅', 'Mirror this panel vertically', () => this.flipSegment(index, 'y'));
+    act('✎', 'Modify this panel with an instruction', () => this.openModifyModal(index));
+    if (total > 1) act('✕', 'Remove this panel from the strip', () => this.removeSegment(index));
+
+    const cellBox = cell.getBoundingClientRect();
+    const bandBox = band.getBoundingClientRect();
+    card.classList.add('visible');
+    // Positioned in pixels rather than centred by transform, so it can be
+    // CLAMPED: the first and last panels sit at the edges, and a card centred
+    // on them would hang off the screen where its icons cannot be clicked.
+    card.style.transform = 'none';
+    card.style.bottom = 'auto';
+    card.style.right = 'auto';
+    const w = card.offsetWidth;
+    const h = card.offsetHeight;
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    // Flush against the band's edge, whose border is painted in the band's
+    // own colour: the two surfaces join and the card reads as a tab growing
+    // out of the strip rather than a box hovering near it.
+    const vertical = band.classList.contains('vertical');
+    card.classList.toggle('side', vertical);
+    if (vertical) {
+      // Beside the column, not over the panel above it.
+      card.style.left = `${bandBox.width}px`;
+      card.style.top = `${clamp(cellBox.top - bandBox.top, 0, Math.max(0, bandBox.height - h))}px`;
+    } else {
+      const centred = cellBox.left - bandBox.left + cellBox.width / 2 - w / 2;
+      card.style.left = `${clamp(centred, 0, Math.max(0, bandBox.width - w))}px`;
+      card.style.top = `${-h}px`;
+    }
+  }
+
+  /** One timeline cell: the panel's artwork, and nothing else. */
+  private timelineCell(seg: SceneSegment, index: number, total: number): HTMLElement {
+    const cell = document.createElement('div');
+    cell.className = `g-tl-cell${index === this.activeSegment ? ' active' : ''}`;
+    cell.title = `PANEL ${index + 1} (DOUBLE-CLICK TO CROP)`;
+
+    const img = document.createElement('img');
+    img.src = fileUrl(seg.image);
+    img.alt = '';
+    // The thumbnail mirrors exactly as the panel does, so a mirrored pair
+    // reads as a mirrored pair at a glance.
+    img.style.transform = `scale(${seg.flipX ? -1 : 1}, ${seg.flipY ? -1 : 1})`;
+    cell.appendChild(img);
+
+    cell.addEventListener('click', () => {
+      UISound.play('click');
+      this.activeSegment = index;
+      this.focusSegment(index);
+      this.renderTimeline();
+    });
+    cell.addEventListener('dblclick', () => {
+      UISound.play('confirm');
+      this.beginCrop(index);
+    });
+    cell.addEventListener('pointerenter', () => {
+      this.keepCard();
+      this.showPanelActions(cell, index, total);
+    });
+    cell.addEventListener('pointerleave', () => this.scheduleHideCard());
+    return cell;
+  }
+
+  /**
+   * Crop a panel: double-click it in the timeline, drag the keep-rectangle
+   * over the artwork, ENTER commits. Deterministic and free — the crop is a
+   * byte-faithful cut of the file, done by the platform, not a render.
+   */
+  private beginCrop(index: number) {
+    const img = this.sceneImages[index];
+    if (!img) return;
+    this.cancelCrop(true);
+    this.endPenPath(true);
+    this.activeSegment = index;
+    this.focusSegment(index);
+    this.renderTimeline();
+    this.crop = { index, start: null, rect: null, gfx: this.add.graphics().setDepth(35) };
+    this.drawCrop();
+    HudShell.keyHint(
+      '<div class="row"><div class="pair"><div class="key wide">DRAG</div>' +
+        '<div class="cap">KEEP AREA</div></div><div class="pair"><div class="key wide">ENTER</div>' +
+        '<div class="cap">CROP</div></div><div class="pair"><div class="key wide">ESC</div>' +
+        '<div class="cap">CANCEL</div></div></div>',
+      `CROP PANEL ${index + 1} — DRAG WHAT TO KEEP`,
+      8000,
+    );
+  }
+
+  private cancelCrop(quiet = false) {
+    if (!this.crop) return;
+    this.crop.gfx.destroy();
+    this.crop = null;
+    HudShell.hideKeyHint();
+    if (!quiet) HudShell.toast('CROP CANCELLED');
+  }
+
+  /** Dim everything but the kept rectangle, over the panel being cropped. */
+  private drawCrop() {
+    const crop = this.crop;
+    const img = crop ? this.sceneImages[crop.index] : null;
+    if (!crop || !img) return;
+    const g = crop.gfx;
+    g.clear();
+    g.fillStyle(0x02040a, 0.55);
+    if (crop.rect) {
+      const r = crop.rect;
+      // Four shades around the kept area, so the keep reads bright.
+      g.fillRect(img.x, img.y, img.width, r.y - img.y);
+      g.fillRect(img.x, r.y + r.h, img.width, img.y + img.height - (r.y + r.h));
+      g.fillRect(img.x, r.y, r.x - img.x, r.h);
+      g.fillRect(r.x + r.w, r.y, img.x + img.width - (r.x + r.w), r.h);
+      g.lineStyle(2 / this.cameras.main.zoom, 0xff9d1d, 1);
+      g.strokeRect(r.x, r.y, r.w, r.h);
+    } else {
+      g.fillRect(img.x, img.y, img.width, img.height);
+      g.lineStyle(2 / this.cameras.main.zoom, 0xff9d1d, 0.8);
+      g.strokeRect(img.x, img.y, img.width, img.height);
+    }
+  }
+
+  /** Clamp a world point into the cropped panel's bounds. */
+  private clampToPanel(p: { x: number; y: number }, img: Phaser.GameObjects.Image) {
+    return {
+      x: Phaser.Math.Clamp(p.x, img.x, img.x + img.width),
+      y: Phaser.Math.Clamp(p.y, img.y, img.y + img.height),
+    };
+  }
+
+  private async applyCrop() {
+    const crop = this.crop;
+    const scene = this.activeScene;
+    const img = crop ? this.sceneImages[crop.index] : null;
+    if (!crop || !scene || !img) return;
+    const rect = crop.rect;
+    if (!rect || rect.w < 8 || rect.h < 8) {
+      return HudShell.toast('DRAG THE AREA TO KEEP FIRST', 'error');
+    }
+    const segments = sceneSegments(scene);
+    const seg = segments[crop.index];
+    if (!seg) return;
+    // The rectangle was drawn over the panel AS DISPLAYED; the file on disk
+    // is the unmirrored original, so a flipped panel's rectangle must be
+    // mirrored back before it is cut, or the crop keeps the wrong side.
+    let x = rect.x - img.x;
+    let y = rect.y - img.y;
+    if (seg.flipX) x = img.width - (x + rect.w);
+    if (seg.flipY) y = img.height - (y + rect.h);
+    const index = crop.index;
+    this.cancelCrop(true);
+
+    await this.busy(null, 'CROPPING THE PANEL (FREE)...', async () => {
+      const out = await api.cropRect({
+        assetId: scene.id,
+        sourceFile: seg.image.path,
+        x: Math.round(x),
+        y: Math.round(y),
+        w: Math.round(rect.w),
+        h: Math.round(rect.h),
+      });
+      await this.applySegments(
+        segments.map((s, i) => (i === index ? { ...s, image: out.fileRef } : s)),
+        'PANEL CROPPED',
+      );
+    });
+  }
+
+  /** Centre the camera on one panel of the strip. */
+  private focusSegment(index: number) {
+    const img = this.sceneImages[index];
+    if (!img) return;
+    this.cameras.main.centerOn(img.x + img.width / 2, img.y + img.height / 2);
+  }
+
+  /** Write a new panel list onto the open scene and redraw everything. */
+  private async applySegments(segments: SceneSegment[], toast: string) {
+    const scene = this.activeScene;
+    if (!scene) return;
+    this.pushMaskUndo(); // strip changes are steps in the same history
+    const saved = await api.updateAsset<Scene>(scene.id, { ...scene, segments });
+    this.activeSegment = Math.max(0, Math.min(this.activeSegment, segments.length - 1));
+    await this.displayScene(saved);
+    await collection.refresh();
+    HudShell.toast(toast, 'success');
+  }
+
+  /** Copy a panel into the strip, optionally mirrored along the loop axis. */
+  private async addSegment(from: number, mirror: boolean) {
+    const scene = this.activeScene;
+    if (!scene) return;
+    const segments = sceneSegments(scene);
+    const source = segments[from] ?? segments[0];
+    if (!source) return;
+    const vertical = scene.loop === 'vertical';
+    const copy: SceneSegment = {
+      ...source,
+      id: `seg_${Date.now().toString(36)}`,
+      // Mirroring on the TRAVEL axis is what makes a copy read as the level
+      // continuing rather than as the same screen shown twice.
+      flipX: mirror && !vertical ? !source.flipX : source.flipX,
+      flipY: mirror && vertical ? !source.flipY : source.flipY,
+    };
+    await this.busy(null, 'ADDING A PANEL (FREE)...', async () => {
+      await this.applySegments(
+        [...segments.slice(0, from + 1), copy, ...segments.slice(from + 1)],
+        mirror ? 'PANEL ADDED · MIRRORED COPY (FREE)' : 'PANEL DUPLICATED (FREE)',
+      );
+    });
+  }
+
+  private flipSegment(index: number, axis: 'x' | 'y') {
+    const scene = this.activeScene;
+    if (!scene) return;
+    const segments = sceneSegments(scene).map((seg, i) =>
+      i === index
+        ? {
+            ...seg,
+            flipX: axis === 'x' ? !seg.flipX : seg.flipX,
+            flipY: axis === 'y' ? !seg.flipY : seg.flipY,
+          }
+        : seg,
+    );
+    void this.applySegments(segments, `PANEL ${index + 1} MIRRORED`);
+  }
+
+  private removeSegment(index: number) {
+    const scene = this.activeScene;
+    if (!scene) return;
+    const segments = sceneSegments(scene).filter((_, i) => i !== index);
+    if (segments.length === 0) return HudShell.toast('A STRIP NEEDS AT LEAST ONE PANEL', 'warn');
+    void this.applySegments(segments, `PANEL ${index + 1} REMOVED`);
+  }
+
+  /**
+   * Ask the model to change ONE panel — as it is drawn, mirroring included.
+   * The instruction is the whole interface: "remove the palm", "make the sky
+   * dusk", "cut the background out". Merge/extend controls used to live here
+   * and were dropped: the model renders a fixed canvas whatever it is shown,
+   * so working panel by panel is all the resolution there is.
+   */
+  private openModifyModal(index: number) {
+    const scene = this.activeScene;
+    const controls = this.scenePanel?.controls;
+    const img = this.sceneImages[index];
+    if (!scene || !controls || !img) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'g-modal-backdrop';
+    const modal = document.createElement('div');
+    modal.className = 'g-modal';
+    const titleRow = document.createElement('div');
+    titleRow.className = 'g-modal-titlerow';
+    const title = document.createElement('div');
+    title.className = 'g-modal-title';
+    title.textContent = `MODIFY PANEL ${index + 1}`;
+    const closeX = document.createElement('div');
+    closeX.className = 'g-modal-close';
+    closeX.textContent = '✕';
+    titleRow.append(title, closeX);
+    const close = () => backdrop.remove();
+
+    const instruction = autoGrow(
+      textArea(
+        '',
+        'e.g. remove the sky so it can go over a parallax background, or take out the palm on the left',
+      ),
+    );
+
+    // Alpha output is a REQUEST, not a default: forcing it once overrode
+    // "make the background red" and handed back a cut-out instead. And it is
+    // TRUE alpha, not a keyed colour — no picking magenta and hoping the art
+    // does not contain it.
+    const transparentSel = document.createElement('select');
+    for (const [value, label] of [
+      ['no', 'OPAQUE — AS THE ARTWORK/INSTRUCTION SAYS'],
+      ['yes', 'CUT OUT — TRUE TRANSPARENT PNG'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      transparentSel.appendChild(opt);
+    }
+
+    const go = document.createElement('genvy-button') as GenvyButton;
+    go.setAttribute('variant', 'accent');
+    const cost = controls.costPreview();
+    go.setLabel(`MODIFY · 1 RENDER${cost ? ` · ${cost}` : ''}`);
+
+    const hint = document.createElement('div');
+    hint.className = 'g-hint';
+    hint.textContent =
+      'THE PANEL IS SENT EXACTLY AS DRAWN, MIRRORING INCLUDED, AND COMES BACK AT ITS OWN SIZE. ' +
+      `USES THE SCENE PANEL'S PROVIDER (${controls.tag()}).`;
+
+    const stack = document.createElement('div');
+    stack.className = 'g-field-stack';
+    stack.append(field('WHAT SHOULD CHANGE', instruction), field('BACKGROUND', transparentSel));
+
+    // A cropped panel is an odd shape the model cannot render: it works at
+    // its standard canvas and the result is scaled back. Say so BEFORE the
+    // button, not after the render.
+    const aspect = img.width / img.height;
+    const standard = [1.5, 1 / 1.5, 1].some((r) => Math.abs(aspect - r) / r < 0.05);
+    if (!standard) {
+      const warn = document.createElement('div');
+      warn.className = 'g-hint';
+      warn.style.color = 'var(--hud-warn)';
+      warn.textContent =
+        `THIS PANEL IS ${img.width}×${img.height} — A CROPPED SHAPE. THE MODEL RENDERS AT ITS ` +
+        `STANDARD ${aspect >= 1 ? 'LANDSCAPE' : 'PORTRAIT'} CANVAS AND THE RESULT IS SCALED BACK ` +
+        'TO THIS SIZE, WHICH CAN SOFTEN OR STRETCH DETAIL.';
+      stack.append(warn);
+    }
+    stack.append(go, hint);
+
+    go.onClick(() => {
+      const blocked = controls.blockedReason();
+      if (blocked) return HudShell.toast(blocked, 'error');
+      const text = instruction.value.trim();
+      if (!text && transparentSel.value === 'no') {
+        return HudShell.toast('SAY WHAT TO CHANGE', 'error');
+      }
+      close();
+      void this.runModify(index, text, transparentSel.value === 'yes');
+    });
+    closeX.addEventListener('click', () => {
+      UISound.play('click');
+      close();
+    });
+    backdrop.addEventListener('pointerdown', (ev) => {
+      if (ev.target === backdrop) close();
+    });
+
+    modal.append(titleRow, stack);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => instruction.dispatchEvent(new Event('input')));
+  }
+
+  /** Run the modification and put the resulting panel back in the strip. */
+  private async runModify(index: number, instruction: string, transparent: boolean) {
+    const scene = this.activeScene;
+    const controls = this.scenePanel?.controls;
+    if (!scene || !controls) return;
+    const segments = sceneSegments(scene);
+    const seg = segments[index];
+    if (!seg) return;
+
+    await this.busy(
+      null,
+      'MODIFYING THE PANEL...',
+      async () => {
+        UISound.play('generate');
+        HudShell.setBusyLabel(`${controls.tag()} · SENDING THE PANEL AS DRAWN...`);
+        const result = await api.sceneModify({
+          assetId: scene.id,
+          panel: { file: seg.image.path, flipX: seg.flipX, flipY: seg.flipY },
+          instruction,
+          styleId: scene.styleId,
+          transparent,
+          provider: controls.providerId(),
+          modelFamily: controls.modelFamily(),
+          renderSize: controls.renderSize(),
+          quality: controls.quality(),
+        });
+        HudShell.setBusyLabel('PUTTING THE PANEL BACK IN THE STRIP (FREE)...');
+        // The result is already drawn the way it should look, so it carries
+        // no mirroring of its own.
+        await this.applySegments(
+          segments.map((s, i) =>
+            i === index
+              ? { ...s, image: result.fileRef, flipX: false, flipY: false, prompt: instruction || s.prompt }
+              : s,
+          ),
+          'PANEL MODIFIED',
+        );
+        UISound.play('complete');
+        await HudShell.refreshSpend();
+      },
+      { key: `scene-modify:${controls.providerId() ?? 'openai'}`, fallbackMs: 40000 },
+    );
+  }
+
+  /**
+   * Fit the whole strip in the viewport, leaving room for the docks.
+   *
+   * The timeline is NOT subtracted here: it owns its own row of the app
+   * layout, so the canvas has already shrunk to the content area and
+   * `this.scale` reports that smaller size.
+   */
+  private frameStrip() {
+    const { width, height } = this.stripSize;
+    if (width < 1 || height < 1) return;
     const cam = this.cameras.main;
-    cam.centerOn(img.width / 2, img.height / 2);
+    cam.centerOn(width / 2, height / 2);
     cam.setZoom(
       Phaser.Math.Clamp(
-        Math.min((this.scale.width - 680) / img.width, (this.scale.height - 140) / img.height),
-        0.05,
+        Math.min((this.scale.width - 680) / width, (this.scale.height - 140) / height),
+        0.02,
         2,
       ),
     );
@@ -974,34 +2527,22 @@ export class WorldToolScene extends Phaser.Scene {
     const forgeBtn = document.createElement('genvy-button') as GenvyButton;
     forgeBtn.setAttribute('variant', 'accent');
     forgeBtn.setAttribute('label', 'FORGE TILESET');
+    forgeBtn.title =
+      'Renders the 24-tile sheet from the concept above — just the PALETTE. The map stays yours ' +
+      'to paint from scratch.';
     // A saved tileset arrives with no concept in memory, so its texts were
     // previously uneditable — this reopens them from the ASSET itself.
-    const editBtn = document.createElement('genvy-button') as GenvyButton;
-    editBtn.setAttribute('label', '✎ EDIT TEXTS');
     const applyBtn = document.createElement('genvy-button') as GenvyButton;
     applyBtn.setAttribute('label', 'UPDATE TEXTS');
     const statusHost = document.createElement('div');
-    this.paletteHost = document.createElement('div');
-    const hint = document.createElement('div');
-    hint.className = 'g-hint';
-    hint.textContent = 'CLICK A TILE TO PAINT WITH IT. RIGHT-CLICK TOGGLES COLLISION (RED DOT).';
 
-    // One prompt to a playable scene: concept -> tileset -> plan -> built map.
-    const oneShotBtn = document.createElement('genvy-button') as GenvyButton;
-    oneShotBtn.setAttribute('variant', 'accent');
-    oneShotBtn.setAttribute('label', '⚡ FORGE ENTIRE LEVEL');
     this.providerControls = new ProviderControls({
       workflow: 'anchor-generate', // a tileset sheet is a plain generation
       candidates: false, // the sheet IS the set; candidates would mean 4 sheets
     });
     this.providerControls.onChange = () => {
-      oneShotBtn.setLabel(
-        `⚡ FORGE ENTIRE LEVEL${
-          this.providerControls ? ` · ${this.providerControls.costPreview()}` : ''
-        }`,
-      );
+      forgeBtn.setLabel(`FORGE TILESET · ${this.providerControls?.costPreview() ?? ''}`);
     };
-    oneShotBtn.onClick(() => void this.forgeEntireLevel(prompt.value));
 
     /**
      * The blueprint the world tool was missing: what DeepSeek actually wrote
@@ -1030,37 +2571,28 @@ export class WorldToolScene extends Phaser.Scene {
       el.addEventListener('change', () => this.syncConceptFromFields());
     }
 
+    // The AI draws the sheet at 1024x1536 — 256px per cell natively — so
+    // 256 costs nothing in resampling. Smaller is a stylistic choice for
+    // chunkier art; 512 upscales.
+    const tileSizeSel = document.createElement('select');
+    for (const size of [64, 128, 256, 512]) {
+      const opt = document.createElement('option');
+      opt.value = String(size);
+      opt.textContent = size === 256 ? '256 PX · NATIVE' : `${size} PX${size === 512 ? ' · UPSCALED' : ''}`;
+      if (size === 256) opt.selected = true;
+      tileSizeSel.appendChild(opt);
+    }
+    this.tileSizeSel = tileSizeSel;
+
     panel.append(
       field('DESCRIBE THE WORLD THEME', prompt),
+      field('TILE SIZE', tileSizeSel),
       ...this.providerControls.elements(),
-      oneShotBtn,
       genBtn,
       this.conceptFields,
       forgeBtn,
-      editBtn,
       statusHost,
-      hint,
-      this.paletteHost,
     );
-    editBtn.style.display = 'none'; // only meaningful once a tileset exists
-    this.editTextsBtn = editBtn;
-
-    editBtn.onClick(() => {
-      const ts = this.tileset;
-      if (!ts) return;
-      UISound.play('click');
-      const showing = this.conceptFields!.style.display !== 'none';
-      if (showing) {
-        this.conceptFields!.style.display = 'none';
-        return;
-      }
-      // Seed from the SAVED asset so edits apply to what is on disk.
-      this.conceptNameIn.value = ts.name;
-      this.conceptPromptIn.value = ts.description;
-      this.conceptTilesIn.value = ts.tiles.map((t) => t.name).join('\n');
-      this.conceptFields!.style.display = '';
-      for (const el of [this.conceptPromptIn, this.conceptTilesIn]) autoGrow.refresh(el);
-    });
 
     applyBtn.onClick(async () => {
       const ts = this.tileset;
@@ -1141,7 +2673,7 @@ export class WorldToolScene extends Phaser.Scene {
           sourceFile: 'raw.png',
           cols: GRID_COLS,
           rows: GRID_ROWS,
-          targetTileSize: TILE_SIZE,
+          targetTileSize: Number(this.tileSizeSel?.value) || 256,
           dedupe: false,
         });
         const tiles = Array.from({ length: extract.tileCount }, (_, i) => ({
@@ -1189,6 +2721,8 @@ export class WorldToolScene extends Phaser.Scene {
             'success',
           );
         }
+        // The concept did its job; the tools take over.
+        this.setStage('edit');
       }, { key: 'tileset:image', fallbackMs: 50000 });
     });
 
@@ -1201,23 +2735,10 @@ export class WorldToolScene extends Phaser.Scene {
 
     const newBtn = document.createElement('genvy-button') as GenvyButton;
     newBtn.setAttribute('label', 'NEW BLANK WORLD');
-    const aiPrompt = textArea('', 'e.g. a cave with three chambers and a lava pit');
-    const aiBtn = document.createElement('genvy-button') as GenvyButton;
-    aiBtn.setAttribute('label', 'AI LAYOUT DRAFT');
     const saveBtn = document.createElement('genvy-button') as GenvyButton;
     saveBtn.setAttribute('variant', 'accent');
     saveBtn.setAttribute('label', 'SAVE WORLD');
     const statusHost = document.createElement('div');
-
-    const toolRow = document.createElement('div');
-    toolRow.className = 'g-row';
-    for (const t of ['brush', 'erase', 'fill'] as PaintTool[]) {
-      const b = document.createElement('genvy-button') as GenvyButton;
-      b.setAttribute('label', t.toUpperCase());
-      b.onClick(() => this.setTool(t));
-      this.toolButtons.set(t, b);
-      toolRow.appendChild(b);
-    }
 
     const layerRow = document.createElement('div');
     layerRow.className = 'g-row';
@@ -1258,13 +2779,8 @@ export class WorldToolScene extends Phaser.Scene {
     panel.append(
       field('WORLD NAME', this.worldNameIn),
       dims,
-      newBtn,
-      document.createElement('div'),
-      field('TOOL', toolRow),
       field('LAYER', layerRow),
-      document.createElement('div'),
-      field('DESCRIBE A LAYOUT', aiPrompt),
-      aiBtn,
+      newBtn,
       saveBtn,
       statusHost,
     );
@@ -1274,34 +2790,6 @@ export class WorldToolScene extends Phaser.Scene {
       this.worldId = null;
       this.buildMap(Number(this.widthIn.value) || 40, Number(this.heightIn.value) || 23);
       HudShell.toast('BLANK WORLD READY — PAINT AWAY');
-    });
-
-    aiBtn.onClick(async () => {
-      if (!this.tileset) return HudShell.toast('FORGE OR LOAD A TILESET FIRST', 'error');
-      if (!aiPrompt.value.trim()) return HudShell.toast('DESCRIBE THE LAYOUT FIRST', 'error');
-      await this.busy(statusHost, 'DRAFTING LEVEL...', async () => {
-        UISound.play('generate');
-        HudShell.setBusyLabel(
-          `DEEPSEEK · LAYING OUT ${this.widthIn.value}x${this.heightIn.value} TILES (GROUND, DECOR, SPAWNS)...`,
-        );
-        // The model PLANS (rooms, roles, densities — a few dozen numbers) and
-        // buildWorldGrid carves the map. Asking for the raw 40x23 grid meant
-        // ~920 integers per layer: truncated replies and disconnected rooms.
-        const res = await api.aiText<WorldPlan>({
-          tool: 'world',
-          prompt: `${aiPrompt.value}\nLevel size: ${this.widthIn.value} x ${this.heightIn.value} tiles.`,
-          schemaName: 'worldPlan',
-          context: {
-            width: Number(this.widthIn.value),
-            height: Number(this.heightIn.value),
-            tiles: this.tileset!.tiles.map((t) => ({ index: t.index, name: t.name, collides: t.collides })),
-          },
-        });
-        HudShell.setBusyLabel('BUILDING ROOMS, CORRIDORS & DECOR (FREE)...');
-        this.applyPlan(res.result);
-        UISound.play('complete');
-        HudShell.toast('LAYOUT DRAFTED — REFINE BY HAND', 'success');
-      }, { key: 'world:layout', fallbackMs: 25000 });
     });
 
     saveBtn.onClick(async () => {
@@ -1355,8 +2843,14 @@ export class WorldToolScene extends Phaser.Scene {
           },
         ],
       });
+      const keptData = this.layers.map((l) => this.layerToData(l));
       this.tileset = saved;
       await this.useTileset(saved);
+      // The sheet on disk was REPACKED, but the map still drew from the old
+      // texture — painting with the new tile put stale pixels down. Rebuild
+      // on the fresh texture with the painting preserved (deleteTile already
+      // learned this lesson).
+      if (this.map) this.buildMap(this.map.width, this.map.height, keptData);
       // Painting continues with the new tile — that is why you made it.
       this.selectedTile = res.newIndex;
       this.renderPalette();
@@ -1424,303 +2918,6 @@ export class WorldToolScene extends Phaser.Scene {
     document.body.appendChild(backdrop);
   }
 
-  /**
-   * Grow the map when painting reaches its edge, so the canvas follows the
-   * level instead of the level being cut to fit a number typed up front.
-   * Existing work is preserved and shifted when growth happens on the top or
-   * left side (negative coordinates become row/column zero).
-   */
-  private growMapFor(tx: number, ty: number): { dx: number; dy: number } {
-    const map = this.map;
-    if (!map || !this.autoGrow) return { dx: 0, dy: 0 };
-    const margin = 1; // start growing one tile before the edge
-    const addLeft = Math.max(0, margin - tx);
-    const addTop = Math.max(0, margin - ty);
-    const addRight = Math.max(0, tx + 1 + margin - map.width);
-    const addBottom = Math.max(0, ty + 1 + margin - map.height);
-    if (!addLeft && !addTop && !addRight && !addBottom) return { dx: 0, dy: 0 };
-
-    const width = Math.min(400, map.width + addLeft + addRight);
-    const height = Math.min(400, map.height + addTop + addBottom);
-    // Re-lay the existing cells at their new offsets.
-    const shifted = this.layers.map((layer) => {
-      const data = this.layerToData(layer);
-      const next: number[][] = Array.from({ length: height }, () =>
-        Array.from({ length: width }, () => -1),
-      );
-      for (let y = 0; y < data.length; y++) {
-        for (let x = 0; x < data[y]!.length; x++) {
-          const ny = y + addTop;
-          const nx = x + addLeft;
-          if (ny < height && nx < width) next[ny]![nx] = data[y]![x]!;
-        }
-      }
-      return next;
-    });
-    this.buildMap(width, height, shifted);
-    this.widthIn.value = String(width);
-    this.heightIn.value = String(height);
-    return { dx: addLeft, dy: addTop };
-  }
-
-  /**
-   * A faint tile grid under the map. Painting is a per-cell operation, so
-   * seeing the cells matters more here than anywhere else in the app — and
-   * the map edge needs to be visible even where nothing is painted yet.
-   */
-  private drawGrid(width: number, height: number, tw: number, th: number) {
-    this.gridGfx?.destroy();
-    const g = this.add.graphics();
-    g.setDepth(-10); // beneath the tile layers
-    const w = width * tw;
-    const h = height * th;
-    g.fillStyle(0x060a12, 1).fillRect(0, 0, w, h); // the map's own ground
-    g.lineStyle(1, 0x1de9ff, 0.09);
-    for (let x = 0; x <= width; x++) g.lineBetween(x * tw, 0, x * tw, h);
-    for (let y = 0; y <= height; y++) g.lineBetween(0, y * th, w, y * th);
-    // Every 5th line slightly stronger, so counting cells is possible.
-    g.lineStyle(1, 0x1de9ff, 0.18);
-    for (let x = 0; x <= width; x += 5) g.lineBetween(x * tw, 0, x * tw, h);
-    for (let y = 0; y <= height; y += 5) g.lineBetween(0, y * th, w, y * th);
-    g.lineStyle(2, 0x1de9ff, 0.5).strokeRect(0, 0, w, h); // the map boundary
-    this.gridGfx = g;
-  }
-
-  /**
-   * Save a forged tileset. Re-forging while one is OPEN updates that asset
-   * instead of minting another: iterating on a theme used to leave a trail of
-   * near-identical "Bat Cave Ecosystem" entries in the inventory, and the
-   * worlds referencing the old one silently kept the old art.
-   */
-  private async saveForgedTileset(data: Record<string, unknown>, existingId: string | null) {
-    if (existingId) {
-      const updated = await api.updateAsset<Tileset>(existingId, { ...data, id: existingId });
-      return { asset: updated, replaced: true };
-    }
-    return { asset: await api.createAsset<Tileset>('tileset', data), replaced: false };
-  }
-
-  /** Snapshot every layer before a change that should be undoable. */
-  private pushUndo() {
-    if (this.layers.length === 0) return;
-    this.undoStack.push(this.layers.map((l) => this.layerToData(l)));
-    if (this.undoStack.length > WorldToolScene.UNDO_LIMIT) this.undoStack.shift();
-  }
-
-  /** Put the last snapshot back on the map. */
-  private undo() {
-    // Each mode undoes its own history: a mask stroke and a tile stroke are
-    // not interchangeable steps.
-    if (this.mode === 'scene') {
-      const snap = this.maskUndo.pop();
-      if (!snap) return HudShell.toast('NOTHING TO UNDO', 'warn');
-      this.mask = snap.mask;
-      this.shapes = snap.shapes;
-      this.drawMask();
-      this.drawShapes();
-      UISound.play('click');
-      HudShell.toast(`UNDONE · ${this.maskUndo.length} STEP(S) LEFT`);
-      return;
-    }
-    const snapshot = this.undoStack.pop();
-    if (!snapshot) return HudShell.toast('NOTHING TO UNDO', 'warn');
-    snapshot.forEach((data, li) => {
-      const layer = this.layers[li];
-      if (!layer) return;
-      for (let y = 0; y < data.length; y++) {
-        const row = data[y]!;
-        for (let x = 0; x < row.length; x++) {
-          const index = row[x]!;
-          if (index < 0) layer.removeTileAt(x, y);
-          else layer.putTileAt(index, x, y);
-        }
-      }
-    });
-    UISound.play('click');
-    HudShell.toast(`UNDONE · ${this.undoStack.length} STEP(S) LEFT`);
-  }
-
-  /**
-   * Delete one tile from the set: repack the sheet server-side, then remap
-   * every painted cell — tiles after the removed one shift down by one, and
-   * cells that used it become empty. Skipping the remap would silently
-   * repaint the level with neighbouring art.
-   */
-  private async deleteTile(index: number) {
-    const ts = this.tileset;
-    if (!ts) return;
-    const name = ts.tiles[index]?.name || `tile ${index + 1}`;
-    await this.busy(null, `REMOVING ${name.toUpperCase()}...`, async () => {
-      HudShell.setBusyLabel('REPACKING THE TILESET (FREE)...');
-      const res = await api.removeTile({
-        assetId: ts.id,
-        sourceFile: 'tileset.png',
-        tileWidth: ts.tileWidth,
-        tileHeight: ts.tileHeight,
-        index,
-      });
-      const tiles = ts.tiles
-        .filter((t) => t.index !== index)
-        .map((t) => ({ ...t, index: res.indexMap[t.index] ?? t.index }));
-      const saved = await api.updateAsset<Tileset>(ts.id, {
-        ...ts,
-        image: res.tileset,
-        tiles,
-        thumbnail: res.thumbnail,
-      });
-      // Repaint existing work through the mapping before the palette moves.
-      this.pushUndo();
-      for (const layer of this.layers) {
-        const data = this.layerToData(layer);
-        for (let y = 0; y < data.length; y++) {
-          for (let x = 0; x < data[y]!.length; x++) {
-            const old = data[y]![x]!;
-            if (old < 0) continue;
-            const next = res.indexMap[old] ?? -1;
-            if (next < 0) layer.removeTileAt(x, y);
-            else if (next !== old) layer.putTileAt(next, x, y);
-          }
-        }
-      }
-      const keptData = this.layers.map((l) => this.layerToData(l));
-      this.tileset = saved;
-      this.selectedTile = Math.max(0, Math.min(this.selectedTile, res.tileCount - 1));
-      await this.useTileset(saved);
-      // Rebuild with the new texture, then restore the remapped painting.
-      if (this.map) this.buildMap(this.map.width, this.map.height, keptData);
-      UISound.play('confirm');
-      HudShell.toast(`${name.toUpperCase()} REMOVED · ${res.tileCount} TILES LEFT`, 'success');
-    });
-  }
-
-  /**
-   * One prompt -> a playable scene. Chains the four steps that were manual
-   * buttons: write the tileset concept, draw the sheet, plan the level, build
-   * the geometry. Each step reports its own chip so a five-minute run reads as
-   * progress rather than a hang, and the paid step is named before it runs.
-   */
-  private async forgeEntireLevel(theme: string) {
-    if (!theme.trim()) return HudShell.toast('DESCRIBE THE WORLD THEME FIRST', 'error');
-    const controls = this.providerControls;
-    const blocked = controls?.blockedReason();
-    if (blocked) return HudShell.toast(blocked, 'error');
-
-    const steps: { label: string; state: BusyStepState }[] = [
-      { label: 'CONCEPT', state: 'active' },
-      { label: 'TILES', state: 'pending' },
-      { label: 'PLAN', state: 'pending' },
-      { label: 'BUILD', state: 'pending' },
-    ];
-    await this.busy(
-      null,
-      'FORGING AN ENTIRE LEVEL...',
-      async () => {
-        UISound.play('generate');
-        const oneShotReforgeId = this.tileset?.id ?? null;
-        HudShell.setBusySteps(steps);
-        HudShell.setBusyLabel('DEEPSEEK · PLANNING THE TILE SET...');
-        const concept = (
-          await api.aiText<TilesetConcept>({
-            tool: 'tileset',
-            prompt: theme,
-            schemaName: 'tilesetConcept',
-          })
-        ).result;
-        this.concept = concept;
-        this.showConcept(concept);
-        steps[0]!.state = 'done';
-        steps[1]!.state = 'active';
-        HudShell.setBusySteps(steps);
-
-        HudShell.setBusyLabel(`${controls?.tag() ?? 'GPT-IMAGE-2'} · DRAWING 24 TILES...`);
-        const img = await api.aiImage({
-          prompt: `${concept.imagePrompt}. Tiles in order: ${
-            concept.tileNames.length ? concept.tileNames.join(', ') : concept.imagePrompt
-          }`,
-          orientation: 'portrait',
-          kind: 'tileset',
-          provider: controls?.providerId(),
-          modelFamily: controls?.modelFamily(),
-          renderSize: controls?.renderSize(),
-          quality: controls?.quality(),
-        });
-        HudShell.setBusyLabel('CUTTING & PACKING THE TILES (FREE)...');
-        const extract = await api.extractTiles({
-          assetId: img.assetId,
-          sourceFile: 'raw.png',
-          cols: GRID_COLS,
-          rows: GRID_ROWS,
-          targetTileSize: TILE_SIZE,
-          dedupe: false,
-        });
-        // Same rule as the manual forge: iterating replaces the open set.
-        const { asset: saved } = await this.saveForgedTileset({
-          id: img.assetId,
-          name: concept.name,
-          description: concept.description,
-          tags: concept.tags,
-          image: extract.tileset,
-          sourceImage: { path: `${img.assetId}/raw.png` },
-          tileWidth: extract.tileWidth,
-          tileHeight: extract.tileHeight,
-          tiles: Array.from({ length: extract.tileCount }, (_, i) => ({
-            index: i,
-            name: concept.tileNames[i] ?? `tile ${i + 1}`,
-            collides: concept.collidingTiles.includes(i),
-            tags: [],
-          })),
-          thumbnail: extract.thumbnail,
-        }, oneShotReforgeId);
-        await this.useTileset(saved);
-        steps[1]!.state = extract.gate && !extract.gate.pass ? 'failed' : 'done';
-        steps[2]!.state = 'active';
-        HudShell.setBusySteps(steps);
-
-        HudShell.setBusyLabel('DEEPSEEK · PLANNING ROOMS, CORRIDORS & SPAWNS...');
-        const plan = (
-          await api.aiText<WorldPlan>({
-            tool: 'world',
-            prompt: `${theme}\nLevel size: ${this.widthIn.value} x ${this.heightIn.value} tiles.`,
-            schemaName: 'worldPlan',
-            context: {
-              width: Number(this.widthIn.value),
-              height: Number(this.heightIn.value),
-              tiles: saved.tiles.map((t) => ({
-                index: t.index,
-                name: t.name,
-                collides: t.collides,
-              })),
-            },
-          })
-        ).result;
-        steps[2]!.state = 'done';
-        steps[3]!.state = 'active';
-        HudShell.setBusySteps(steps);
-
-        HudShell.setBusyLabel('BUILDING THE MAP (FREE)...');
-        this.applyPlan(plan);
-        steps[3]!.state = 'done';
-        HudShell.setBusySteps(steps);
-
-        await collection.refresh();
-        UISound.play('complete');
-        const gate = extract.gate;
-        HudShell.toast(
-          `LEVEL FORGED: ${concept.name.toUpperCase()} · ${plan.rooms.length} ROOMS` +
-            `${gate ? ` · TILE GATE ${gate.score}/100` : ''} — PAINT TO REFINE, THEN SAVE`,
-          gate && !gate.pass ? 'warn' : 'success',
-        );
-      },
-      {
-        // Keyed by provider + size: a local 1024 sheet and a gpt-image-2 call
-        // are minutes apart, and one average for both is a lie.
-        key: `world:oneshot:${this.providerControls?.providerId() ?? 'openai'}:${this.providerControls?.renderSize() ?? 'std'}`,
-        fallbackMs: 90000,
-      },
-    );
-  }
-
-  /** Fill the blueprint from a freshly written concept and reveal it. */
   private showConcept(concept: TilesetConcept) {
     this.conceptNameIn.value = concept.name;
     this.conceptPromptIn.value = concept.imagePrompt;
@@ -1776,6 +2973,9 @@ export class WorldToolScene extends Phaser.Scene {
     if (!this.map) {
       this.buildMap(Number(this.widthIn.value) || 40, Number(this.heightIn.value) || 23);
       HudShell.toast('BLANK WORLD READY — PICK A TILE AND PAINT', 'success');
+      // A crash while painting an unsaved new world parks its strokes under
+      // the tileset's key; a fresh blank canvas is where they come back.
+      this.restoreWorldDraft();
     }
   }
 
@@ -1875,6 +3075,7 @@ export class WorldToolScene extends Phaser.Scene {
     });
 
     this.drawGrid(width, height, ts.tileWidth, ts.tileHeight);
+    this.drawProps();
 
     const cam = this.cameras.main;
     cam.centerOn((width * ts.tileWidth) / 2, (height * ts.tileHeight) / 2);
@@ -1886,26 +3087,224 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /**
-   * Build a map from an AI plan. The geometry is produced locally, so it is
-   * free, instant and correct by construction: every room reachable, walls
-   * enclosing, decor only on the surface it targets.
+   * Grow the map when painting reaches its edge, so the canvas follows the
+   * level instead of the level being cut to fit a number typed up front.
+   * Existing work is preserved and shifted when growth happens on the top or
+   * left side (negative coordinates become row/column zero).
    */
-  private applyPlan(plan: WorldPlan) {
-    if (!this.tileset) return;
-    const width = Number(this.widthIn.value) || 40;
-    const height = Number(this.heightIn.value) || 23;
-    const built = buildWorldGrid(plan, { width, height });
-    this.worldNameIn.value = plan.name || this.worldNameIn.value;
-    this.pushUndo(); // a drafted layout is undoable like any other change
-    this.buildMap(
-      width,
-      height,
-      built.layers.map((l) => l.data),
-    );
-    this.plannedSpawns = built.spawnPoints;
-    if (built.notes.length > 0) {
-      console.log('[genvy] world builder notes:', built.notes);
-      HudShell.toast(built.notes[0]!.toUpperCase(), 'warn');
+  private growMapFor(tx: number, ty: number): { dx: number; dy: number } {
+    const map = this.map;
+    if (!map || !this.autoGrow) return { dx: 0, dy: 0 };
+    const margin = 1; // start growing one tile before the edge
+    const addLeft = Math.max(0, margin - tx);
+    const addTop = Math.max(0, margin - ty);
+    const addRight = Math.max(0, tx + 1 + margin - map.width);
+    const addBottom = Math.max(0, ty + 1 + margin - map.height);
+    if (!addLeft && !addTop && !addRight && !addBottom) return { dx: 0, dy: 0 };
+
+    const width = Math.min(400, map.width + addLeft + addRight);
+    const height = Math.min(400, map.height + addTop + addBottom);
+    // Re-lay the existing cells at their new offsets.
+    const shifted = this.layers.map((layer) => {
+      const data = this.layerToData(layer);
+      const next: number[][] = Array.from({ length: height }, () =>
+        Array.from({ length: width }, () => -1),
+      );
+      for (let y = 0; y < data.length; y++) {
+        for (let x = 0; x < data[y]!.length; x++) {
+          const ny = y + addTop;
+          const nx = x + addLeft;
+          if (ny < height && nx < width) next[ny]![nx] = data[y]![x]!;
+        }
+      }
+      return next;
+    });
+    this.buildMap(width, height, shifted);
+    this.widthIn.value = String(width);
+    this.heightIn.value = String(height);
+    return { dx: addLeft, dy: addTop };
+  }
+
+  /**
+   * A faint tile grid under the map. Painting is a per-cell operation, so
+   * seeing the cells matters more here than anywhere else in the app — and
+   * the map edge needs to be visible even where nothing is painted yet.
+   */
+  private drawGrid(width: number, height: number, tw: number, th: number) {
+    this.gridGfx?.destroy();
+    const g = this.add.graphics();
+    g.setDepth(-10); // beneath the tile layers
+    const w = width * tw;
+    const h = height * th;
+    g.fillStyle(0x060a12, 1).fillRect(0, 0, w, h); // the map's own ground
+    g.lineStyle(1, 0x1de9ff, 0.09);
+    for (let x = 0; x <= width; x++) g.lineBetween(x * tw, 0, x * tw, h);
+    for (let y = 0; y <= height; y++) g.lineBetween(0, y * th, w, y * th);
+    // Every 5th line slightly stronger, so counting cells is possible.
+    g.lineStyle(1, 0x1de9ff, 0.18);
+    for (let x = 0; x <= width; x += 5) g.lineBetween(x * tw, 0, x * tw, h);
+    for (let y = 0; y <= height; y += 5) g.lineBetween(0, y * th, w, y * th);
+    g.lineStyle(2, 0x1de9ff, 0.5).strokeRect(0, 0, w, h); // the map boundary
+    this.gridGfx = g;
+  }
+
+  /**
+   * Save a forged tileset. Re-forging while one is OPEN updates that asset
+   * instead of minting another: iterating on a theme used to leave a trail of
+   * near-identical "Bat Cave Ecosystem" entries in the inventory, and the
+   * worlds referencing the old one silently kept the old art.
+   */
+  private async saveForgedTileset(data: Record<string, unknown>, existingId: string | null) {
+    if (existingId) {
+      const updated = await api.updateAsset<Tileset>(existingId, { ...data, id: existingId });
+      return { asset: updated, replaced: true };
+    }
+    return { asset: await api.createAsset<Tileset>('tileset', data), replaced: false };
+  }
+
+  /** Snapshot every layer before a change that should be undoable. */
+  private pushUndo() {
+    this.draftDirty = true;
+    if (this.layers.length === 0) return;
+    this.undoStack.push({
+      layers: this.layers.map((l) => this.layerToData(l)),
+      props: this.props.map((pr) => ({ ...pr })),
+    });
+    if (this.undoStack.length > WorldToolScene.UNDO_LIMIT) this.undoStack.shift();
+  }
+
+  /** Put the last snapshot back on the map. */
+  private undo() {
+    // Each mode undoes its own history: a mask stroke and a tile stroke are
+    // not interchangeable steps.
+    if (this.paintingZones) {
+      const snap = this.maskUndo.pop();
+      if (!snap) return HudShell.toast('NOTHING TO UNDO', 'warn');
+      this.mask = snap.mask;
+      this.shapes = snap.shapes;
+      this.drawMask();
+      this.drawShapes();
+      this.draftDirty = true;
+      // A crop, flip, duplicate or modify changed the STRIP — put it back
+      // too, on disk, so the undo is real and survives a reload.
+      const scene = this.activeScene;
+      if (scene && JSON.stringify(snap.segments) !== JSON.stringify(sceneSegments(scene))) {
+        void (async () => {
+          const saved = await api.updateAsset<Scene>(scene.id, { ...scene, segments: snap.segments });
+          await this.displayScene(saved);
+        })();
+      }
+      UISound.play('click');
+      HudShell.toast(`UNDONE · ${this.maskUndo.length} STEP(S) LEFT`);
+      return;
+    }
+    const snapshot = this.undoStack.pop();
+    if (!snapshot) return HudShell.toast('NOTHING TO UNDO', 'warn');
+    this.props = snapshot.props;
+    this.drawProps();
+    snapshot.layers.forEach((data, li) => {
+      const layer = this.layers[li];
+      if (!layer) return;
+      for (let y = 0; y < data.length; y++) {
+        const row = data[y]!;
+        for (let x = 0; x < row.length; x++) {
+          const index = row[x]!;
+          if (index < 0) layer.removeTileAt(x, y);
+          else layer.putTileAt(index, x, y);
+        }
+      }
+    });
+    UISound.play('click');
+    HudShell.toast(`UNDONE · ${this.undoStack.length} STEP(S) LEFT`);
+  }
+
+  /**
+   * Delete one tile from the set: repack the sheet server-side, then remap
+   * every painted cell — tiles after the removed one shift down by one, and
+   * cells that used it become empty. Skipping the remap would silently
+   * repaint the level with neighbouring art.
+   */
+  private async deleteTile(index: number) {
+    const ts = this.tileset;
+    if (!ts) return;
+    const name = ts.tiles[index]?.name || `tile ${index + 1}`;
+    await this.busy(null, `REMOVING ${name.toUpperCase()}...`, async () => {
+      HudShell.setBusyLabel('REPACKING THE TILESET (FREE)...');
+      const res = await api.removeTile({
+        assetId: ts.id,
+        sourceFile: 'tileset.png',
+        tileWidth: ts.tileWidth,
+        tileHeight: ts.tileHeight,
+        index,
+      });
+      const tiles = ts.tiles
+        .filter((t) => t.index !== index)
+        .map((t) => ({ ...t, index: res.indexMap[t.index] ?? t.index }));
+      const saved = await api.updateAsset<Tileset>(ts.id, {
+        ...ts,
+        image: res.tileset,
+        tiles,
+        thumbnail: res.thumbnail,
+      });
+      // Repaint existing work through the mapping before the palette moves.
+      this.pushUndo();
+      for (const layer of this.layers) {
+        const data = this.layerToData(layer);
+        for (let y = 0; y < data.length; y++) {
+          for (let x = 0; x < data[y]!.length; x++) {
+            const old = data[y]![x]!;
+            if (old < 0) continue;
+            const next = res.indexMap[old] ?? -1;
+            if (next < 0) layer.removeTileAt(x, y);
+            else if (next !== old) layer.putTileAt(next, x, y);
+          }
+        }
+      }
+      const keptData = this.layers.map((l) => this.layerToData(l));
+      this.tileset = saved;
+      this.selectedTile = Math.max(0, Math.min(this.selectedTile, res.tileCount - 1));
+      await this.useTileset(saved);
+      // Rebuild with the new texture, then restore the remapped painting.
+      if (this.map) this.buildMap(this.map.width, this.map.height, keptData);
+      UISound.play('confirm');
+      HudShell.toast(`${name.toUpperCase()} REMOVED · ${res.tileCount} TILES LEFT`, 'success');
+    });
+  }
+
+
+  /**
+   * Draw the stretched-tile props. Each is ONE tile scaled over its block —
+   * what painting with a wide brush means — rendered from a texture frame
+   * cut out of the tileset sheet, above the tile layers.
+   */
+  private drawProps() {
+    for (const img of this.propImages) img.destroy();
+    this.propImages = [];
+    const ts = this.tileset;
+    if (!ts || !this.map) return;
+    const texture = this.textures.get(this.tilesetKey);
+    if (!texture || texture.key === '__MISSING') return;
+    const src = texture.getSourceImage() as HTMLImageElement;
+    const cols = Math.max(1, Math.floor(src.width / ts.tileWidth));
+    for (const prop of this.props) {
+      const frameName = `prop:${prop.tile}`;
+      if (!texture.has(frameName)) {
+        texture.add(
+          frameName,
+          0,
+          (prop.tile % cols) * ts.tileWidth,
+          Math.floor(prop.tile / cols) * ts.tileHeight,
+          ts.tileWidth,
+          ts.tileHeight,
+        );
+      }
+      const img = this.add
+        .image(prop.x * ts.tileWidth, prop.y * ts.tileHeight, this.tilesetKey, frameName)
+        .setOrigin(0, 0)
+        .setDepth(2)
+        .setVisible(this.tilesActive && this.stage === 'edit');
+      img.setDisplaySize(prop.w * ts.tileWidth, prop.h * ts.tileHeight);
+      this.propImages.push(img);
     }
   }
 
@@ -1913,7 +3312,7 @@ export class WorldToolScene extends Phaser.Scene {
   private restoreCursor() {
     if (this.spacePanning) return this.input.setDefaultCursor('grab');
     // Painted mode aims at pixels, so it keeps a crosshair.
-    this.input.setDefaultCursor(this.mode === 'scene' ? 'crosshair' : 'default');
+    this.input.setDefaultCursor(this.paintingZones ? 'crosshair' : 'default');
   }
 
   private setupCameraControls() {
@@ -1931,6 +3330,8 @@ export class WorldToolScene extends Phaser.Scene {
       // Not while typing in a panel field — space belongs to the text there.
       const el = document.activeElement;
       if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
+      // While the dummy is out, space is its JUMP, not the pan grab.
+      if (this.dummy?.active) return;
       this.spacePanning = true;
       this.painting = false;
       // Grabbing mid-stroke ends the stroke; the next dab must not join it.
@@ -1970,6 +3371,9 @@ export class WorldToolScene extends Phaser.Scene {
     this.input.on(
       'wheel',
       (_p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
+        // Fullscreen playtest is played at the level's own fit — zooming
+        // there would show the void past the artwork or crop the level.
+        if (this.inPlaytest) return;
         const cam = this.cameras.main;
         cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), 0.15, 4));
       },
@@ -1991,19 +3395,37 @@ export class WorldToolScene extends Phaser.Scene {
       if (focused instanceof HTMLElement && focused !== document.body) focused.blur();
       // Right-click ends an open pen path (it also pans, harmlessly).
       if (p.rightButtonDown()) this.endPenPath();
-      // Vector tools click and drag; they never touch the mask grid.
-      if (this.mode === 'scene' && p.leftButtonDown() && !this.spacePanning) {
+      // Vector tools click and drag; they never touch the mask grid. ALT is
+      // the pens' delete modifier: laying points is the common case, so
+      // removing one must not cost a tool switch.
+      const alt = (p.event as MouseEvent | undefined)?.altKey === true;
+      if (this.crop && p.leftButtonDown() && !this.spacePanning) {
+        const img = this.sceneImages[this.crop.index];
+        if (img) {
+          this.crop.start = this.clampToPanel(this.pixelAt(p), img);
+          this.crop.rect = null;
+          this.drawCrop();
+        }
+        return;
+      }
+      if (this.stage === 'edit' && p.leftButtonDown() && !this.spacePanning) {
         // With the ERASER armed, a click on a vector tool removes the shape under
         // the cursor rather than starting another one.
-        if (this.tool === 'erase' && VECTOR_TOOLS.includes(this.maskTool)) {
+        if (this.paintingZones && this.tool === 'erase' && VECTOR_TOOLS.includes(this.maskTool)) {
           if (this.eraseShapeAt(p)) return;
         }
+        if (this.maskTool === 'fill') {
+          this.floodAt(p);
+          return;
+        }
         if (this.maskTool === 'line') {
-          this.penClick(p);
+          if (alt) this.dropPenAnchor();
+          else this.penClick(p);
           return;
         }
         if (this.maskTool === 'shape') {
-          this.shapeClick(p);
+          if (alt) this.deletePenPoint(p);
+          else this.shapeClick(p);
           return;
         }
         if (this.maskTool === 'rect' || this.maskTool === 'triangle' || this.maskTool === 'circle') {
@@ -2016,7 +3438,7 @@ export class WorldToolScene extends Phaser.Scene {
       if (p.leftButtonDown() && !this.spacePanning) {
         // One snapshot per STROKE, not per tile — undo should step back a
         // drag, not 300 individual cells.
-        if (this.mode === 'scene') this.pushMaskUndo();
+        if (this.paintingZones) this.pushMaskUndo();
         else this.pushUndo();
         this.painting = true;
         this.lastMaskCell = null; // a new stroke starts fresh
@@ -2038,7 +3460,7 @@ export class WorldToolScene extends Phaser.Scene {
         );
         this.brushSel.value = match ? match.value : '';
       }
-      HudShell.toast(`BRUSH ${this.brushSize * 2 - 1} CELLS`);
+      HudShell.toast(`BRUSH ${this.brushSize} ${this.paintingZones ? 'CELL' : 'TILE'}${this.brushSize === 1 ? '' : 'S'} WIDE`);
     });
     // Ctrl+Z anywhere in the scene, as long as a field does not have focus.
     this.input.keyboard?.on('keydown-Z', (ev: KeyboardEvent) => {
@@ -2051,7 +3473,26 @@ export class WorldToolScene extends Phaser.Scene {
       ev.preventDefault();
       this.undo();
     });
-    this.input.keyboard?.on('keydown-ESC', () => this.endPenPath());
+    this.input.keyboard?.on('keydown-ENTER', () => {
+      if (this.crop) void this.applyCrop();
+    });
+    this.input.keyboard?.on('keydown-ESC', () => {
+      if (this.inPlaytest) {
+        this.exitPlaytest();
+        return;
+      }
+      if (this.crop) {
+        this.cancelCrop();
+        return;
+      }
+      if (this.dummy?.active) {
+        this.dummy.destroy();
+        this.dummy = null;
+        HudShell.toast('DUMMY REMOVED');
+        return;
+      }
+      this.endPenPath();
+    });
     // Arrow keys aim the triangle tool, and only it: elsewhere they are free.
     for (const [event, dir] of [
       ['keydown-UP', 'up'],
@@ -2062,7 +3503,8 @@ export class WorldToolScene extends Phaser.Scene {
       this.input.keyboard?.on(event, (ev: KeyboardEvent) => {
         const el = document.activeElement;
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
-        if (this.mode !== 'scene' || this.maskTool !== 'triangle') return;
+        if (this.dummy?.active) return; // arrows steer the dummy, not the tool
+        if (this.stage !== 'edit' || this.maskTool !== 'triangle') return;
         ev.preventDefault();
         this.triangleDir = dir;
         UISound.play('click');
@@ -2071,6 +3513,21 @@ export class WorldToolScene extends Phaser.Scene {
       });
     }
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (this.crop?.start && p.leftButtonDown()) {
+        const img = this.sceneImages[this.crop.index];
+        if (img) {
+          const now = this.clampToPanel(this.pixelAt(p), img);
+          const st = this.crop.start;
+          this.crop.rect = {
+            x: Math.min(st.x, now.x),
+            y: Math.min(st.y, now.y),
+            w: Math.abs(now.x - st.x),
+            h: Math.abs(now.y - st.y),
+          };
+          this.drawCrop();
+        }
+        return;
+      }
       if (this.painting && p.leftButtonDown()) this.paintAt(p);
       if (this.shapeDrag && p.leftButtonDown()) {
         this.shapeDrag.now = this.pixelAt(p);
@@ -2079,14 +3536,17 @@ export class WorldToolScene extends Phaser.Scene {
       this.drawBrushCursor(p);
     });
     this.input.on('pointerup', () => {
+      if (this.crop) this.crop.start = null;
       this.painting = false;
+      this.propStamped = false;
       this.lastMaskCell = null;
       this.strokeOrigin = null;
       if (this.shapeDrag) {
         const shape = this.dragToShape();
         this.shapeDrag = null;
         if (shape) {
-          this.commitShape(shape);
+          if (this.paintingZones) this.commitShape(shape);
+          else this.rasterizePolygonToTiles(shapeOutline(shape));
           UISound.play('confirm');
         } else {
           this.drawShapes(); // clear the abandoned preview
@@ -2108,7 +3568,9 @@ export class WorldToolScene extends Phaser.Scene {
     }
     const g = this.brushCursor;
     g.clear();
-    if (this.mode !== 'scene' || !this.sceneImage || this.spacePanning) return;
+    // Playtest is for walking the level, not marking it: the nib ring and
+    // its cell box are editor chrome and stay behind with the panels.
+    if (this.mode !== 'scene' || !this.sceneImage || this.spacePanning || this.inPlaytest) return;
 
     const zoom = this.cameras.main.zoom;
     // Previews must show what SHIFT will actually commit, not the free cursor.
@@ -2202,6 +3664,9 @@ export class WorldToolScene extends Phaser.Scene {
     this.maskUndo.push({
       mask: this.mask.map((row) => [...row]),
       shapes: this.shapes.map((sh) => ({ ...sh, points: sh.points.map((p) => ({ ...p })) })),
+      segments: this.activeScene
+        ? sceneSegments(this.activeScene).map((seg) => ({ ...seg, image: { ...seg.image } }))
+        : [],
     });
     if (this.maskUndo.length > WorldToolScene.UNDO_LIMIT) this.maskUndo.shift();
   }
@@ -2209,7 +3674,7 @@ export class WorldToolScene extends Phaser.Scene {
   private paintAt(pointer: Phaser.Input.Pointer) {
     // Each mode paints its own thing: tiles into a tilemap, or gameplay
     // zones over a painted scene.
-    if (this.mode === 'scene') {
+    if (this.paintingZones) {
       this.paintMask(pointer);
       return;
     }
@@ -2240,13 +3705,51 @@ export class WorldToolScene extends Phaser.Scene {
     }
     if (tx < 0 || ty < 0 || tx >= this.map.width || ty >= this.map.height) return;
 
-    if (this.tool === 'brush') {
-      layer.putTileAt(this.selectedTile, tx, ty);
-    } else if (this.tool === 'erase') {
-      layer.removeTileAt(tx, ty);
-    } else if (this.tool === 'fill') {
+    if (this.tool === 'fill') {
       this.floodFill(layer, tx, ty, this.selectedTile);
       this.painting = false;
+      return;
+    }
+    // The brush and the eraser share the [ ] size: brushSize IS the stamp's
+    // width in tiles, stepping by one. Even sizes anchor a cell up-left of
+    // the cursor, as tile editors do.
+    const off = Math.floor((this.brushSize - 1) / 2);
+    const x0 = tx - off;
+    const y0 = ty - off;
+
+    if (this.tool === 'brush' && this.brushSize > 1) {
+      // A wide brush paints ONE tile stretched over the block, not a grid of
+      // repeats — nine stamped rocks read as nine rocks. One per click.
+      if (this.propStamped) return;
+      this.propStamped = true;
+      this.props.push({
+        tile: this.selectedTile,
+        x: x0,
+        y: y0,
+        w: this.brushSize,
+        h: this.brushSize,
+      });
+      this.drawProps();
+      return;
+    }
+
+    if (this.tool === 'erase') {
+      // The eraser takes props with it: any prop the stamp touches goes.
+      const before = this.props.length;
+      this.props = this.props.filter(
+        (pr) => pr.x + pr.w <= x0 || x0 + this.brushSize <= pr.x || pr.y + pr.h <= y0 || y0 + this.brushSize <= pr.y,
+      );
+      if (this.props.length !== before) this.drawProps();
+    }
+
+    for (let dy = -off; dy <= this.brushSize - 1 - off; dy++) {
+      for (let dx = -off; dx <= this.brushSize - 1 - off; dx++) {
+        const x = tx + dx;
+        const y = ty + dy;
+        if (x < 0 || y < 0 || x >= this.map.width || y >= this.map.height) continue;
+        if (this.tool === 'brush') layer.putTileAt(this.selectedTile, x, y);
+        else layer.removeTileAt(x, y);
+      }
     }
   }
 
@@ -2260,7 +3763,8 @@ export class WorldToolScene extends Phaser.Scene {
       if (cx! < 0 || cy! < 0 || cx! >= this.map!.width || cy! >= this.map!.height) continue;
       const cur = layer.getTileAt(cx!, cy!)?.index ?? -1;
       if (cur !== target) continue;
-      layer.putTileAt(newIndex, cx!, cy!);
+      if (newIndex < 0) layer.removeTileAt(cx!, cy!);
+      else layer.putTileAt(newIndex, cx!, cy!);
       stack.push([cx! + 1, cy!], [cx! - 1, cy!], [cx!, cy! + 1], [cx!, cy! - 1]);
     }
   }
@@ -2299,6 +3803,7 @@ export class WorldToolScene extends Phaser.Scene {
       // is only for a hand-painted map that never had a plan.
       spawnPoints:
         this.plannedSpawns.length > 0 ? this.plannedSpawns : [{ name: 'player', x: 2, y: 2 }],
+      props: this.props,
       thumbnail: this.tileset.thumbnail,
     };
     /**
@@ -2326,11 +3831,20 @@ export class WorldToolScene extends Phaser.Scene {
     if (targetId) {
       await api.updateAsset(targetId, payload);
       this.worldId = targetId;
+      this.clearWorldDrafts();
       return { created: false };
     }
     const saved = await api.createAsset<World>('world', payload);
     this.worldId = saved.id;
+    this.clearWorldDrafts();
     return { created: true };
+  }
+
+  /** A saved world clears both its own draft and the unsaved-new one. */
+  private clearWorldDrafts() {
+    if (this.worldId) clearDraft(`world:world:${this.worldId}`);
+    if (this.tileset) clearDraft(`world:new:${this.tileset.id}`);
+    this.draftDirty = false;
   }
 
   private async loadExisting(assetId: string, assetType: string) {
@@ -2344,6 +3858,7 @@ export class WorldToolScene extends Phaser.Scene {
       } else if (assetType === 'tileset') {
         const ts = await api.getAsset<Tileset>(assetId);
         await this.useTileset(ts);
+        this.setStage('edit');
         HudShell.toast(`TILESET LOADED: ${ts.name.toUpperCase()}`);
       } else if (assetType === 'world') {
         const world = await api.getAsset<World>(assetId);
@@ -2354,8 +3869,11 @@ export class WorldToolScene extends Phaser.Scene {
         this.widthIn.value = String(world.width);
         this.heightIn.value = String(world.height);
         const tileLayers = world.layers.filter((l) => l.kind === 'tiles');
+        this.props = (world.props ?? []).map((pr) => ({ ...pr }));
         this.buildMap(world.width, world.height, tileLayers.map((l) => (l as { data: number[][] }).data));
+        this.setStage('edit');
         HudShell.toast(`WORLD LOADED: ${world.name.toUpperCase()}`);
+        this.restoreWorldDraft();
       }
     } catch {
       HudShell.toast('FAILED TO LOAD ASSET', 'error');

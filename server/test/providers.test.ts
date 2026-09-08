@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { ProviderRegistry } from '../src/providers/index.js';
 import { animationToSheet } from '../src/providers/retrodiffusion.js';
+import { canvasFor } from '../src/providers/localInference.js';
+import { createOpenAiProvider } from '../src/providers/openai.js';
 import {
   variantsImagePrompt,
   animationStripImagePrompt,
@@ -315,5 +317,78 @@ describe('prompt scaffolds', () => {
       const block = choreographyBlock('attack', n);
       expect(block.match(/^Frame \d+:/gm)).toHaveLength(n);
     }
+  });
+});
+
+/**
+ * A local render used to come back square whatever was asked for, so a
+ * landscape level and a tall one produced the same canvas. These pin that the
+ * orientation actually reaches the diffusion dimensions, on a grid the UNet
+ * can handle.
+ */
+describe('canvasFor', () => {
+  it('lays the long side along the requested axis', () => {
+    const wide = canvasFor(768, 'landscape');
+    expect(wide.width).toBeGreaterThan(wide.height);
+    const tall = canvasFor(768, 'portrait');
+    expect(tall.height).toBeGreaterThan(tall.width);
+    // The same numbers, transposed — one shape, two orientations.
+    expect(wide.width).toBe(tall.height);
+    expect(wide.height).toBe(tall.width);
+  });
+
+  it('stays square when nothing is asked for', () => {
+    expect(canvasFor(640)).toEqual({ width: 640, height: 640 });
+    expect(canvasFor(640, 'square')).toEqual({ width: 640, height: 640 });
+  });
+
+  it('snaps both sides to a multiple of 64', () => {
+    for (const size of [512, 640, 768, 1024, 700]) {
+      for (const o of ['landscape', 'portrait', 'square']) {
+        const c = canvasFor(size, o);
+        expect(c.width % 64).toBe(0);
+        expect(c.height % 64).toBe(0);
+        expect(Math.min(c.width, c.height)).toBeGreaterThanOrEqual(256);
+      }
+    }
+  });
+});
+
+/**
+ * gpt-image-2 prices by canvas AND quality, and a square canvas is dearer
+ * than the tall/wide one at every tier — the opposite of what a pixel-count
+ * guess predicts. Estimating it wrong makes the header spend contradict the
+ * button that spent it, so the published table is pinned here.
+ */
+describe('gpt-image-2 cost by canvas', () => {
+  const openai = createOpenAiProvider('test-key').capabilities.costEstimate;
+  const req = (orientation: 'square' | 'landscape' | 'portrait', quality: 'low' | 'medium' | 'high') =>
+    ({ prompt: 'x', orientation, quality }) as Parameters<typeof openai>[0];
+
+  it('matches the published prices, in cents', () => {
+    // 1024x1024: $0.006 / $0.053 / $0.211
+    expect(openai(req('square', 'low'))).toBeCloseTo(0.6, 6);
+    expect(openai(req('square', 'medium'))).toBeCloseTo(5.3, 6);
+    expect(openai(req('square', 'high'))).toBeCloseTo(21.1, 6);
+    // 1024x1536 and 1536x1024: $0.005 / $0.041 / $0.165
+    for (const o of ['portrait', 'landscape'] as const) {
+      expect(openai(req(o, 'low'))).toBeCloseTo(0.5, 6);
+      expect(openai(req(o, 'medium'))).toBeCloseTo(4.1, 6);
+      expect(openai(req(o, 'high'))).toBeCloseTo(16.5, 6);
+    }
+  });
+
+  it('charges MORE for a square than for a tall or wide canvas', () => {
+    for (const quality of ['low', 'medium', 'high'] as const) {
+      expect(openai(req('square', quality))).toBeGreaterThan(openai(req('landscape', quality)));
+      // The two non-square canvases are the same size and the same price.
+      expect(openai(req('portrait', quality))).toBe(openai(req('landscape', quality)));
+    }
+  });
+
+  it('still prices a request that carries no orientation at all', () => {
+    const animate = { prompt: 'x', frames: 4 } as Parameters<typeof openai>[0];
+    expect(() => openai(animate)).not.toThrow();
+    expect(openai(animate)).toBeGreaterThan(0);
   });
 });

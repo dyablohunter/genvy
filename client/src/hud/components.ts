@@ -42,7 +42,13 @@ export class GenvyButton extends HTMLElement {
     this.textContent = '';
     this.appendChild(this.btn);
     this.btn.addEventListener('mouseenter', () => UISound.play('hover'));
-    this.btn.addEventListener('click', () => UISound.play('click'));
+    this.btn.addEventListener('click', () => {
+      UISound.play('click');
+      // A clicked button must not KEEP focus: a focused native button
+      // re-fires on Space and Enter, and Space is the pan/jump key — one
+      // click on DUMMY and every Space press opened another modal.
+      this.btn?.blur();
+    });
     for (const fn of this.pendingHandlers) this.btn.addEventListener('click', fn);
     this.pendingHandlers = [];
     if (this.pendingDisabled !== null) this.btn.disabled = this.pendingDisabled;

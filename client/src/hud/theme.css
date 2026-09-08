@@ -33,17 +33,42 @@ body {
   height: 100vh;
 }
 
+/* The app is a LAYOUT, not a stack of overlays: a header row, a content row,
+   and a footer row for a horizontal strip timeline — or a left column for a
+   vertical one, in which case there is no footer. The two custom properties
+   are set on <body> when a timeline opens, and the canvas, the HUD docks and
+   the timeline all read them, so the content area genuinely shrinks instead
+   of being covered. */
+#app {
+  --g-tl-bottom: 0px;
+  --g-tl-left: 0px;
+}
+
+body.g-timeline-bottom #app {
+  --g-tl-bottom: 102px;
+}
+
+body.g-timeline-left #app {
+  --g-tl-left: 148px;
+}
+
 #game-canvas-host,
 #game-canvas-host canvas {
   position: absolute;
-  inset: 0;
-  width: 100% !important;
-  height: 100% !important;
+  top: 0;
+  right: 0;
+  bottom: var(--g-tl-bottom);
+  left: var(--g-tl-left);
+  width: auto !important;
+  height: auto !important;
 }
 
 #hud-root {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: var(--g-tl-bottom);
+  left: 0;
   pointer-events: none;
   z-index: 10;
   font-family: var(--font-mono);
@@ -150,7 +175,8 @@ body.g-page-scroll #genvy-char-detail {
 }
 
 .g-dock-left {
-  left: 12px;
+  /* Steps aside for a left-hand timeline column rather than sitting on it. */
+  left: calc(12px + var(--g-tl-left));
 }
 
 .g-dock-right {
@@ -792,7 +818,9 @@ genvy-asset-card .g-type {
 
 .g-tile-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  /* A proper grid, four across: even rows and columns, the whole set in
+     view. Sharpness comes from the tiles' own resolution (256px native). */
+  grid-template-columns: repeat(4, 1fr);
   gap: 4px;
 }
 
@@ -1782,7 +1810,10 @@ genvy-button.g-icon button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  /* Wide enough that captioned keys have room to spread apart instead of
+     their captions running into one another. */
+  min-width: 330px;
   padding: 12px 20px;
   background: var(--hud-bg);
   border: 1px solid var(--hud-line-dim);
@@ -1804,11 +1835,27 @@ genvy-button.g-icon button {
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  width: 100%;
 }
 
+/* Captioned keys use the card's full width, so each caption sits under its
+   own key with clear air between them. */
 .g-keyhint-art .row {
   display: flex;
   gap: 4px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+/* A lone key centres rather than hugging the left edge. */
+.g-keyhint-art .row > .pair:only-child {
+  margin: 0 auto;
+}
+
+/* The arrow keypad is one picture: it stays tight and centred. */
+.g-keyhint-art .row.cluster {
+  width: auto;
+  justify-content: center;
 }
 
 .g-keyhint-art .key {
@@ -1846,7 +1893,7 @@ genvy-button.g-icon button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 7px;
 }
 
 /* Word keys (SHIFT, CTRL+Z, SPACE) need room a single glyph does not. */
@@ -1864,4 +1911,290 @@ genvy-button.g-icon button {
   letter-spacing: 1px;
   color: var(--hud-text-dim);
   min-height: 9px;
+}
+
+/* ---------- Strip timeline ---------- */
+/* A looping level is authored by arranging PANELS, so the arrangement gets a
+   video-editor track. It is a ROW of the app layout (or a column), never an
+   overlay: the canvas and the docks inset around it. */
+#genvy-timeline {
+  position: absolute;
+  display: flex;
+  z-index: 12;
+  /* The band owns its row outright — nothing of the stage passes behind it —
+     so it carries the HUD's ground and edge like every other surface.
+     Overflow stays visible so the hover card can rise above the band. */
+  background: var(--hud-bg-solid);
+  pointer-events: auto;
+}
+
+/* Footer row: the level runs left to right, so the strip does too. The top
+   padding is headroom for the hover card, which is positioned INTO it. */
+#genvy-timeline.horizontal {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--g-tl-bottom);
+  padding: 10px;
+  border-top: 1px solid var(--hud-line-dim);
+}
+
+/* Left column: a tower is authored top to bottom, beside the stage. Below the
+   header, and no footer — the two bands would fight for the same corner. */
+#genvy-timeline.vertical {
+  left: 0;
+  top: 44px;
+  bottom: 0;
+  width: var(--g-tl-left);
+  padding: 10px;
+  border-right: 1px solid var(--hud-line-dim);
+}
+
+.g-tl-track {
+  display: flex;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  /* No visible scrollbar: it reserved a strip along the bottom of the track,
+     which lifted every panel off the floor of the band. The track still
+     scrolls with the wheel. */
+  scrollbar-width: none;
+}
+
+.g-tl-track::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+#genvy-timeline.horizontal .g-tl-track {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+#genvy-timeline.vertical .g-tl-track {
+  flex-direction: column;
+}
+
+/* The panel IS its artwork: no frame, no padding, no caption, and nothing
+   behind it — a cut-out panel must read as cut out. The cell takes its SIZE
+   from the artwork too: the band's row fixes one axis and the image's own
+   aspect sets the other, so a wide panel is a wide cell and a cropped one a
+   narrow one — the strip reads as the level it is. */
+.g-tl-cell {
+  position: relative;
+  flex: 0 0 auto;
+  height: 100%;
+  border: 1px solid var(--hud-line-dim);
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+#genvy-timeline.vertical .g-tl-cell {
+  width: 100%;
+  height: auto;
+  flex: 0 0 auto;
+}
+
+/* The panel the camera is on, so the strip and the stage agree. */
+.g-tl-cell.active {
+  border-color: var(--hud-accent);
+  box-shadow: 0 0 14px rgba(255, 157, 29, 0.25);
+}
+
+.g-tl-cell img {
+  display: block;
+  height: 100%;
+  width: auto;
+  image-rendering: pixelated;
+}
+
+#genvy-timeline.vertical .g-tl-cell img {
+  width: 100%;
+  height: auto;
+}
+
+/* The panel's actions float ABOVE the strip and only while a panel is
+   hovered: six icons under every thumbnail is a wall of glyphs, and the strip
+   should read as artwork first. It is a child of the BAND, not of the track —
+   a scrolling track clips anything positioned outside its own box, which is
+   exactly where this card needs to be. */
+/* The strip's padding, painted in the band's own colour and made a hover
+   target: without it the pointer crosses 10px of dead space on its way from a
+   panel to its tab, and the tab closes under the cursor. */
+.g-tl-bridge {
+  position: absolute;
+  background: var(--hud-bg-solid);
+  z-index: 2;
+}
+
+#genvy-timeline.horizontal .g-tl-bridge {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+
+#genvy-timeline.vertical .g-tl-bridge {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+}
+
+.g-tl-actions {
+  position: absolute;
+  display: flex;
+  gap: 4px;
+  padding: 5px 6px;
+  background: var(--hud-bg-solid);
+  border: 1px solid var(--hud-line-dim);
+  /* The edge it meets is painted in the band's own colour and overlapped by a
+     pixel, so the card reads as a TAB growing out of the strip rather than a
+     separate box floating above it. */
+  border-bottom-color: var(--hud-bg-solid);
+  box-shadow: 0 0 18px rgba(2, 4, 10, 0.85);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0.12s;
+  z-index: 3;
+}
+
+.g-tl-actions.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Beside a left-hand column, the shared edge is the card's left one. */
+.g-tl-actions.side {
+  border-bottom-color: var(--hud-line-dim);
+  border-left-color: var(--hud-bg-solid);
+}
+
+.g-tl-actions button {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* `all: unset` leaves line-height at `normal`, so the glyph sat on the
+     font's baseline inside a taller line box and rode high in the button.
+     A line-height of 1 makes the flex centring act on the glyph itself. */
+  line-height: 1;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  padding: 0;
+  color: var(--hud-line);
+  border: 1px solid var(--hud-line-dim);
+  background: rgba(29, 233, 255, 0.06);
+}
+
+.g-tl-actions button:hover {
+  background: rgba(29, 233, 255, 0.2);
+  box-shadow: 0 0 14px rgba(29, 233, 255, 0.3);
+  text-shadow: 0 0 8px var(--hud-line);
+}
+
+/* The one cell with no artwork to size it. */
+.g-tl-add {
+  width: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--hud-text-dim);
+  font-size: 24px;
+  line-height: 1;
+}
+
+#genvy-timeline.vertical .g-tl-add {
+  width: 100%;
+  height: 56px;
+}
+
+.g-tl-add:hover {
+  border-color: var(--hud-accent);
+  color: var(--hud-accent);
+}
+
+
+/* A mask-layer button carries its layer's colour, so PAINT AS reads as the
+   palette it is rather than a dozen identical squares. */
+genvy-button.g-icon[style*='--g-kind'] button {
+  color: var(--g-kind);
+  border-color: color-mix(in srgb, var(--g-kind) 45%, transparent);
+  background: color-mix(in srgb, var(--g-kind) 8%, transparent);
+}
+
+genvy-button.g-icon[style*='--g-kind'][variant='accent'] button {
+  background: color-mix(in srgb, var(--g-kind) 26%, transparent);
+  border-color: var(--g-kind);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--g-kind) 35%, transparent);
+  text-shadow: 0 0 8px var(--g-kind);
+}
+
+/* ---------- Playtest fullscreen ---------- */
+/* The whole viewport is the level: every panel, dock and band steps aside so
+   the playtest is judged on the game's own terms. The X (and ESC) bring the
+   editor back. */
+body.g-playtest #hud-root,
+body.g-playtest #genvy-timeline {
+  display: none;
+}
+
+body.g-playtest #app {
+  --g-tl-bottom: 0px !important;
+  --g-tl-left: 0px !important;
+}
+
+.g-playtest-exit,
+.g-playtest-mask {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 40;
+  width: 36px;
+  height: 36px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  color: var(--hud-line);
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-line-dim);
+}
+
+body.g-playtest .g-playtest-exit,
+body.g-playtest .g-playtest-mask {
+  display: flex;
+}
+
+/* The mask toggle sits beside the X: same chrome, its own job. */
+.g-playtest-mask {
+  right: 58px;
+}
+
+.g-playtest-mask.off {
+  color: var(--hud-text-dim);
+  text-decoration: line-through;
+}
+
+.g-playtest-mask:hover {
+  background: rgba(29, 233, 255, 0.18);
+  text-shadow: 0 0 8px var(--hud-line);
+}
+
+/* Leaving is a closing action, so the X reads as one on approach. */
+.g-playtest-exit:hover {
+  color: var(--hud-danger);
+  border-color: rgba(255, 61, 90, 0.6);
+  background: rgba(255, 61, 90, 0.12);
+  text-shadow: 0 0 8px var(--hud-danger);
 }

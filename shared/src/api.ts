@@ -49,7 +49,12 @@ export interface AiTextResponse {
   result: unknown;
 }
 
-export type ImageOrientation = 'portrait' | 'landscape';
+/**
+ * The canvas shape a request wants. `square` exists for maps the camera moves
+ * across in BOTH axes (top-down, isometric): a wide strip throws away half of
+ * such a level, and a tall one throws away the other half.
+ */
+export type ImageOrientation = 'portrait' | 'landscape' | 'square';
 
 /** Sprite Pipeline v2 anchor directions. East is computed (flip of west), never generated. */
 export type AnchorDirection = 'south' | 'west' | 'east' | 'north';
@@ -70,13 +75,17 @@ export interface AiImageRequest {
     | 'tileset'
     /** One painted level backdrop (isometric/side/top-down), not a tile grid. */
     | 'scene'
+    /** Strip a scene panel's background so something can go behind it. */
+    | 'sceneCutout'
     | 'raw'
     | 'anchor'
     | 'anchorDirectional'
     | 'neutralReset';
   /** kind 'scene': how the level is framed. */
   view?: 'isometric' | 'side' | 'topdown' | 'threequarter';
-  /** kind 'scene': the backdrop loops horizontally. */
+  /** kind 'scene': which axis the backdrop repeats along. */
+  loop?: 'none' | 'horizontal' | 'vertical';
+  /** kind 'scene': the backdrop loops horizontally. Superseded by `loop`. */
   seamless?: boolean;
   /** kind 'animation': library file used as the character reference. */
   referenceFile?: string;
@@ -189,6 +198,33 @@ export interface AiImageResponse {
   fileRef: FileRef;
 }
 
+/**
+ * POST /api/ai/scene-modify — change ONE scene panel.
+ *
+ * The panel is sent AS DRAWN (mirroring included) so the model works on the
+ * image the user is looking at, and the result is resampled back to the
+ * panel's own size. Merging panels and directional extension used to live
+ * here — dropped: the model renders a fixed canvas whatever it is shown, so
+ * stitching sections bought seams without buying resolution.
+ */
+export interface SceneModifyRequest {
+  assetId: string;
+  panel: { file: string; flipX?: boolean; flipY?: boolean };
+  instruction?: string;
+  provider?: string;
+  modelFamily?: string;
+  quality?: 'low' | 'medium' | 'high';
+  renderSize?: number;
+  styleId?: string;
+  /** Ask for alpha output (a cut-out panel for parallax). Off by default. */
+  transparent?: boolean;
+  outName?: string;
+}
+
+export interface SceneModifyResult {
+  fileRef: FileRef;
+}
+
 /** Estimated AI spend per provider (GET /api/usage) — pricing-based, not billing. */
 export interface UsageResponse {
   providers: {
@@ -257,6 +293,22 @@ export interface RemoveBgRequest {
   sourceFile: string;
   tolerance?: number; // 0-64
   mode?: 'floodfill' | 'chroma' | 'both';
+}
+
+/**
+ * Crop one library image to a rectangle, byte-faithfully (POST
+ * /api/image/crop-rect). Free, no AI — and distinct from the sprite forge's
+ * /api/image/crop, which chroma-keys an opaque source on the way through:
+ * exactly the treatment that would mangle a painted scene panel.
+ */
+export interface CropRectRequest {
+  assetId: string;
+  sourceFile: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  outName?: string;
 }
 
 export interface SliceSheetRequest {

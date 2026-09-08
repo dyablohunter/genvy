@@ -1,4 +1,4 @@
-import type { Scene, SceneView } from '@genvy/shared';
+import type { ImageOrientation, Scene, SceneLoop, SceneView } from '@genvy/shared';
 import { HudShell } from '../../hud/HudShell.js';
 import { UISound } from '../../hud/UISound.js';
 import { api } from '../../api/client.js';
@@ -25,8 +25,8 @@ export interface ScenePanelHooks {
    * assets in the inventory — the session owns one scene at a time.
    */
   current: () => Scene | null;
-  /** Forget the open scene so the next paint starts a new asset. */
-  clear: () => void;
+  /** Open the playtest dummy setup. */
+  dummy: () => void;
   /** Run work behind the shared busy indicator. */
   busy: (
     label: string,
@@ -41,6 +41,18 @@ const VIEWS: { id: SceneView; label: string }[] = [
   { id: 'threequarter', label: '3/4 OVERHEAD (JRPG)' },
   { id: 'topdown', label: 'TOP-DOWN' },
 ];
+
+/**
+ * The canvas a view actually wants. A side-scroller's camera travels along
+ * one axis, so a wide canvas is all level; an isometric or overhead map is
+ * walked in both axes, and a 3:2 strip of one is half a map.
+ */
+const VIEW_ORIENTATION: Record<SceneView, 'landscape' | 'square'> = {
+  side: 'landscape',
+  isometric: 'square',
+  threequarter: 'square',
+  topdown: 'square',
+};
 
 export function buildScenePanel(hooks: ScenePanelHooks) {
   const panel = HudShell.makePanel('03 · SCENE', 'left');
@@ -59,8 +71,9 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
   // offered rather than assumed.
   const loopSel = document.createElement('select');
   for (const [value, label] of [
-    ['no', 'SINGLE SCREEN'],
-    ['yes', 'LOOPS HORIZONTALLY'],
+    ['none', 'SINGLE SCREEN'],
+    ['horizontal', 'LOOPS HORIZONTALLY'],
+    ['vertical', 'LOOPS VERTICALLY'],
   ] as const) {
     const opt = document.createElement('option');
     opt.value = value;
@@ -68,38 +81,104 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
     loopSel.appendChild(opt);
   }
 
-  const controls = new ProviderControls({ workflow: 'anchor-generate', candidates: false });
+  const controls = new ProviderControls({
+    workflow: 'anchor-generate',
+    candidates: false,
+    // A level backdrop needs room. Retro Diffusion tops out at 384px, which
+    // is a fine sprite and an unusable scene, so it is not offered here.
+    eligible: (p) => p.capabilities.generate && p.capabilities.maxSize >= 512,
+  });
+
+  /**
+   * Canvas shape, as three rectangles. The view sets a sensible default, but
+   * it is only a default: a vertical level (a tower, a descent, a shaft) is a
+   * real thing to want, and the model can only give one if it is asked for a
+   * tall canvas.
+   */
+  let orientation: ImageOrientation = 'landscape';
+  const orientRow = document.createElement('div');
+  orientRow.className = 'g-icon-row';
+  const orientButtons = new Map<ImageOrientation, GenvyButton>();
+  for (const [id, icon, hint] of [
+    ['landscape', '▭', 'LANDSCAPE — the camera travels sideways'],
+    ['portrait', '▯', 'PORTRAIT — a tall level: a tower, a shaft, a descent'],
+    ['square', '□', 'SQUARE — walked in both axes, as in top-down and isometric maps'],
+  ] as const) {
+    const btn = document.createElement('genvy-button') as GenvyButton;
+    btn.classList.add('g-icon');
+    btn.setAttribute('label', icon);
+    btn.title = hint;
+    btn.onClick(() => {
+      UISound.play('click');
+      setOrientation(id);
+      HudShell.toast(hint.replace(' — ', ' · ').toUpperCase());
+    });
+    orientButtons.set(id, btn);
+    orientRow.appendChild(btn);
+  }
+  // The rest of the CANVAS line belongs to the playtest dummy: paint, then
+  // immediately walk what was painted.
+  const dummyBtn = document.createElement('genvy-button') as GenvyButton;
+  dummyBtn.setAttribute('label', 'DUMMY');
+  dummyBtn.title = 'Drop a controllable test character onto the scene';
+  dummyBtn.style.flex = '1 1 auto';
+  dummyBtn.onClick(() => {
+    UISound.play('click');
+    hooks.dummy();
+  });
+  orientRow.appendChild(dummyBtn);
+
+  function setOrientation(next: ImageOrientation) {
+    orientation = next;
+    for (const [id, btn] of orientButtons) {
+      btn.setAttribute('variant', id === next ? 'accent' : '');
+    }
+    // A square costs less than a wide or tall render, so the price the button
+    // shows has to follow the canvas the button will actually ask for.
+    controls.setCanvas(next);
+  }
+
+  /**
+   * A looping backdrop is a SIDE-SCROLLER idea: the camera pans along one
+   * axis and the art repeats. An isometric or overhead map has no such seam —
+   * its grid does not wrap at the image edge — so offering the option there
+   * only produces art built around a seam that will never be used.
+   */
+  function syncFraming(viewChanged = false) {
+    const sideOn = viewSel.value === 'side';
+    // A view change re-proposes that view's canvas; the buttons then override.
+    if (viewChanged) setOrientation(VIEW_ORIENTATION[viewSel.value as SceneView]);
+    loopSel.disabled = !sideOn;
+    if (!sideOn) loopSel.value = 'none';
+    loopField.title = sideOn
+      ? 'Looping backdrops are the norm for side-scrollers'
+      : 'ONLY SIDE VIEW LOOPS — AN ISOMETRIC OR OVERHEAD MAP HAS NO SEAM TO REPEAT';
+    loopField.style.opacity = sideOn ? '1' : '0.5';
+  }
+  viewSel.addEventListener('change', () => syncFraming(true));
+  // A tower loops top-to-bottom, so it wants a tall canvas; a run loops
+  // left-to-right and wants a wide one.
+  loopSel.addEventListener('change', () => {
+    if (loopSel.value === 'vertical') setOrientation('portrait');
+    else if (loopSel.value === 'horizontal') setOrientation('landscape');
+  });
+
   const forgeBtn = document.createElement('genvy-button') as GenvyButton;
   forgeBtn.setAttribute('variant', 'accent');
   forgeBtn.setAttribute('label', 'PAINT THE SCENE');
 
-  // Which asset this panel is about to write to. Without this the user cannot
-  // tell a re-paint from a new scene until the inventory tells them, too late.
-  const status = document.createElement('div');
-  status.className = 'g-hint';
-  const newBtn = document.createElement('genvy-button') as GenvyButton;
-  newBtn.setAttribute('label', 'START A NEW SCENE');
-  newBtn.hidden = true;
-  newBtn.onClick(() => {
-    UISound.play('click');
-    hooks.clear();
-    refresh();
-    HudShell.toast('NEXT PAINT CREATES A NEW SCENE');
-  });
 
   function refresh() {
     const open = hooks.current();
     const cost = controls.costPreview();
-    const verb = open ? 'REPAINT THIS SCENE' : 'PAINT THE SCENE';
-    forgeBtn.setLabel(`${verb}${cost ? ` · ${cost}` : ''}`);
-    status.textContent = open
-      ? `EDITING: ${open.name.toUpperCase()} — PAINTING AGAIN REPLACES ITS ARTWORK AND CLEARS ITS MASK.`
-      : 'NO SCENE OPEN — PAINTING CREATES A NEW ONE.';
-    newBtn.hidden = !open;
+    const verb = open ? 'REPAINT' : 'PAINT THE SCENE';
+    forgeBtn.setLabel(`${verb}${cost ? ` ${cost}` : ''}`);
     if (open && !prompt.value.trim()) prompt.value = open.prompt;
     for (const opt of Array.from(viewSel.options)) {
       if (open && opt.value === open.view) viewSel.value = open.view;
     }
+    if (open) loopSel.value = open.loop ?? 'none';
+    syncFraming();
   }
   controls.onChange = () => refresh();
 
@@ -119,16 +198,17 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
     f.style.minWidth = '0';
   }
   rowLeft.append(viewField, loopField);
+  const orientField = field('CANVAS', orientRow);
 
   panel.append(
     field('DESCRIBE THE SCENE', prompt),
     rowLeft,
+    orientField,
     ...controls.elements(),
     forgeBtn,
-    status,
-    newBtn,
     hint,
   );
+  setOrientation(VIEW_ORIENTATION[viewSel.value as SceneView]);
   refresh();
 
   forgeBtn.onClick(async () => {
@@ -136,7 +216,7 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
     const blocked = controls.blockedReason();
     if (blocked) return HudShell.toast(blocked, 'error');
     const view = viewSel.value as SceneView;
-    const seamless = loopSel.value === 'yes';
+    const loop = loopSel.value as SceneLoop;
     const open = hooks.current();
 
     await hooks.busy(
@@ -146,11 +226,10 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
         HudShell.setBusyLabel(`${controls.tag()} · PAINTING THE ${view.toUpperCase()} SCENE...`);
         const img = await api.aiImage({
           prompt: prompt.value.trim(),
-          // A level is wider than it is tall, whatever the view.
-          orientation: 'landscape',
+          orientation,
           kind: 'scene',
           view,
-          seamless,
+          loop,
           // Re-painting an open scene writes into ITS file directory, so the
           // artwork and the asset never live in two different folders.
           assetId: open?.id,
@@ -171,6 +250,10 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
           image: img.fileRef,
           sourceImage: img.fileRef,
           view,
+          loop,
+          // A re-paint replaces the artwork, so the old strip's panels no
+          // longer describe it; the new render becomes panel one.
+          segments: [],
           prompt: prompt.value.trim(),
           width: img.fileRef.width ?? 0,
           height: img.fileRef.height ?? 0,

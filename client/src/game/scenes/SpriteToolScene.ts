@@ -25,6 +25,7 @@ import { goToScene, enterScene, registerAssetOpenHandlers } from '../../hud/tran
 import { attachBackdrop } from '../backdrop.js';
 import { api, fileUrl, ApiError } from '../../api/client.js';
 import { collection } from '../../state/collection.js';
+import { saveDraft, loadDraft, clearDraft } from '../../state/drafts.js';
 import {
   field,
   textInput,
@@ -424,7 +425,13 @@ export class SpriteToolScene extends Phaser.Scene {
     ];
     for (const panel of wizard) HudShell.hidePanel(panel);
     void HudShell.setLayout(wizard).then(() => {
-      if (fresh) this.setStage('concept');
+      if (fresh) {
+        this.setStage('concept');
+        // Everything AFTER the first forge persists server-side with the
+        // session (concept.json); the one thing a crash could still eat is
+        // the text typed BEFORE any session exists. Park it locally.
+        this.restoreConceptDraft();
+      }
     });
     void this.loadProviders();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -1046,7 +1053,7 @@ export class SpriteToolScene extends Phaser.Scene {
       const provider = this.providers.find((x) => x.id === this.genProviderSel.value);
       const perImage = { low: 0.005, medium: 0.041, high: 0.165 }[this.qualityFor() ?? 'low'] ?? 0;
       const calls = provider?.capabilities.gridSheets === false ? n : 1;
-      const cost = provider?.free ? 'FREE' : perImage ? `~$${(perImage * calls).toFixed(3)}` : '';
+      const cost = provider?.free ? 'FREE' : perImage ? `$${(perImage * calls).toFixed(3)}` : '';
       // setLabel, not setAttribute: GenvyButton reads the label attribute
       // only at mount — attribute writes after that are silently ignored.
       forgeBtn.setLabel(
@@ -2850,8 +2857,66 @@ export class SpriteToolScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * The concept stage before any session exists is the only work with no
+   * asset behind it — a long description closed with the tab was simply
+   * gone. It drafts to localStorage on every keystroke and clears the moment
+   * a session takes over (persistConcept owns it from there).
+   */
+  private conceptDraftWired = false;
+
+  private wireConceptDraft() {
+    if (this.conceptDraftWired) return;
+    this.conceptDraftWired = true;
+    const save = () => {
+      if (this.sessionId) return; // the session's concept.json owns it now
+      saveDraft('sprite:concept', {
+        describe: this.describeIn.value,
+        name: this.nameIn.value,
+        lore: this.descIn.value,
+        imagePrompt: this.imagePromptIn.value,
+        subject: this.subjectSel.value,
+        style: this.styleIn.value,
+        creativity: this.creativityIn.value,
+      });
+    };
+    for (const el of [this.describeIn, this.nameIn, this.descIn, this.imagePromptIn]) {
+      el.addEventListener('input', save);
+    }
+    for (const el of [this.subjectSel, this.styleIn, this.creativityIn]) {
+      el.addEventListener('change', save);
+    }
+  }
+
+  private restoreConceptDraft() {
+    this.wireConceptDraft();
+    const draft = loadDraft<{
+      describe: string;
+      name: string;
+      lore: string;
+      imagePrompt: string;
+      subject: string;
+      style: string;
+      creativity: string;
+    }>('sprite:concept');
+    if (!draft) return;
+    const d = draft.data;
+    if (!d.describe && !d.name && !d.lore && !d.imagePrompt) return;
+    if (d.describe) this.describeIn.value = d.describe;
+    if (d.name) this.nameIn.value = d.name;
+    if (d.lore) this.descIn.value = d.lore;
+    if (d.imagePrompt) this.imagePromptIn.value = d.imagePrompt;
+    if (d.subject) this.subjectSel.value = d.subject;
+    if (d.style) this.styleIn.value = d.style;
+    if (d.creativity) this.creativityIn.value = d.creativity;
+    for (const el of [this.describeIn, this.descIn, this.imagePromptIn]) autoGrow.refresh(el);
+    HudShell.toast('UNSAVED CONCEPT TEXT RESTORED', 'warn');
+  }
+
   /** Persist the character prompt + concept + sliders so any resume restores them. */
   private persistConcept(targetId: string) {
+    // A session owns the state from here; the pre-session draft has done its job.
+    clearDraft('sprite:concept');
     const data = {
       describe: this.describeIn.value,
       name: this.nameIn.value,

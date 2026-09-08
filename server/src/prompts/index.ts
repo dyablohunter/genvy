@@ -742,7 +742,13 @@ const SCENE_VIEW_RULES: Record<SceneView, string> = {
 
 export interface ScenePromptOpts extends ImagePromptOpts {
   view?: SceneView;
-  /** The scene loops horizontally (endless runners, scrolling backdrops). */
+  /**
+   * Which axis the panel repeats along: horizontal for a scrolling run,
+   * vertical for a tower or a descent. A panel of a strip must butt up
+   * against the next copy of itself on that axis, and only that axis.
+   */
+  loop?: 'none' | 'horizontal' | 'vertical';
+  /** Deprecated alias for loop: 'horizontal'. */
   seamless?: boolean;
 }
 
@@ -755,6 +761,20 @@ export interface ScenePromptOpts extends ImagePromptOpts {
  */
 export function sceneImagePrompt(description: string, opts: ScenePromptOpts = {}): string {
   const view = opts.view ?? 'side';
+  // Only a side view loops. An isometric or overhead map is walked in both
+  // axes and never repeats at the image edge, so a loop instruction there
+  // just makes the model build the art around a seam nothing will use.
+  const asked = opts.loop ?? (opts.seamless ? 'horizontal' : 'none');
+  const loop = view === 'side' ? asked : 'none';
+  const LOOP_RULE: Record<'horizontal' | 'vertical', string> = {
+    horizontal:
+      '\n- The LEFT and RIGHT edges must continue into each other so the scene loops horizontally: ' +
+      'no unique landmark hard against either edge, and matching horizon height and ground line.',
+    vertical:
+      '\n- The TOP and BOTTOM edges must continue into each other so the scene loops vertically ' +
+      '(a tower, a shaft, a descent): no unique landmark hard against either edge, and matching ' +
+      'wall structure and lighting where they meet.',
+  };
   return `A complete 2D game LEVEL BACKGROUND — the playable environment itself, not an illustration
 of it. ${SCENE_VIEW_RULES[view]}
 
@@ -770,11 +790,56 @@ Level requirements:
 - Consistent lighting from ONE direction across the whole scene, and one coherent palette.
 - No user interface, no HUD, no text, no labels, no watermark, no logo, no title card.
 - No isolated focal "hero shot" composition — the interest is spread across the whole width.${
-    opts.seamless
-      ? '\n- The LEFT and RIGHT edges must continue into each other so the scene loops horizontally: ' +
-        'no unique landmark hard against either edge, and matching horizon height and ground line.'
-      : ''
+    loop === 'none' ? '' : LOOP_RULE[loop]
   }`;
+}
+
+/**
+ * Strip a scene panel back to its playable geometry so something else can go
+ * behind it — the point of a parallax stack. Deterministic keying cannot do
+ * this: a painted sky is a gradient with clouds in it, not a flat colour, and
+ * the terrain shares its palette. Only a model that understands what the
+ * ground IS can cut along that edge.
+ */
+export function sceneCutoutEditPrompt(keep?: string): string {
+  return `Remove the BACKGROUND from this game level artwork and return it on a fully transparent
+background (true PNG alpha).
+
+Keep: ${keep?.trim() || 'the playable foreground — ground, platforms, terrain, walls, and the props resting on them'}.
+Remove: sky, clouds, sun, distant horizon, far mountains, background haze and any scenery that sits
+behind the playable geometry.
+
+CRITICAL:
+- Do NOT redraw, restyle, recolour or move anything that is kept. Every kept pixel stays exactly as
+  it is, in the same place, at the same size.
+- Cut along the real silhouette of the kept geometry, including small details like grass tufts,
+  overhanging edges and foliage that belongs to the foreground.
+- No matte, no halo, no leftover fringe of sky colour along the cut edge.
+- No new elements, no shadow plate, no background replacement of any kind.`;
+}
+
+/**
+ * Change one scene panel, keeping everything not named in the change.
+ *
+ * This used to also drive multi-panel merges and directional extensions,
+ * section by section — dropped: the model renders a fixed canvas whatever it
+ * is shown, so stitching sections bought seams without buying resolution.
+ * One panel in, the same panel back, changed as asked.
+ */
+export function sceneModifyEditPrompt(instruction: string): string {
+  const asked = instruction.trim();
+  return `Modify this 2D game LEVEL BACKGROUND. Keep the artwork you are given and change only what
+is asked.
+
+Change requested: ${asked || 'no change — return the artwork as it is'}
+
+CRITICAL:
+- Everything not named in the change stays EXACTLY as it is: same composition, same ground and
+  horizon heights, same palette, same lighting direction, same art style and scale.
+- Do not reframe, crop, zoom, shift or restyle the image.
+- Where something is removed, rebuild what would be behind it so no hole, silhouette or smear is
+  left; where transparency is asked for, use a true alpha channel and cut cleanly with no halo.
+- EMPTY of characters, creatures and vehicles; full bleed; no border, frame, vignette or text.`;
 }
 
 export function tilesetImagePrompt(subjects: string): string {

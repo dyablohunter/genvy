@@ -36,6 +36,23 @@ export interface LocalInferenceOptions {
 
 export type LocalInferenceProvider = ImageProvider & { refreshHealth(): Promise<boolean> };
 
+/**
+ * Turn a render size plus an orientation into diffusion dimensions.
+ *
+ * A square render was being returned whatever the caller asked for, so a
+ * landscape level came back as a square and a tall one likewise. Both sides
+ * are rounded to a multiple of 64: SDXL-family UNets are trained on such
+ * dimensions and produce seams and doubled subjects off-grid.
+ */
+export function canvasFor(size: number, orientation?: string): { width: number; height: number } {
+  const snap = (n: number) => Math.max(256, Math.round(n / 64) * 64);
+  const long = snap(size);
+  const short = snap(size * 0.67); // ~3:2, the shape both stock canvases use
+  if (orientation === 'landscape') return { width: long, height: short };
+  if (orientation === 'portrait') return { width: short, height: long };
+  return { width: long, height: long };
+}
+
 export function createLocalInferenceProvider(
   baseUrl: string,
   opts: LocalInferenceOptions = {},
@@ -190,7 +207,7 @@ export function createLocalInferenceProvider(
         // The service skips its segmentation cutout for full-canvas art.
         transparent: req.transparent !== false,
         ...(req.modelFamily ? { family: req.modelFamily } : {}),
-        ...(req.renderSize ? { width: req.renderSize, height: req.renderSize } : {}),
+        ...(req.renderSize ? canvasFor(req.renderSize, req.orientation) : {}),
         ...styleOf(req),
       });
       reportFree(req);

@@ -5,6 +5,10 @@ import {
   shapeOutline,
   pointInShape,
   SceneSchema,
+  SceneShapeSchema,
+  SCENE_MASK_KINDS,
+  maskKindsForView,
+  defaultFriction,
   type MaskPoint,
 } from '@genvy/shared';
 
@@ -249,5 +253,105 @@ describe('scene shapes', () => {
       height: 8,
     });
     expect(bare.shapes).toEqual([]);
+  });
+});
+
+/**
+ * Which layers a scene offers depends on how it is framed. A side-scroller is
+ * authored as negative space; a top-down map is authored as positive space
+ * (the walkable path). Getting this wrong doubles the work on half the
+ * scenes, so the rosters are pinned.
+ */
+describe('mask kinds per view', () => {
+  it('gives every view a roster of real, unique kinds', () => {
+    for (const view of ['side', 'isometric', 'threequarter', 'topdown'] as const) {
+      const kinds = maskKindsForView(view);
+      expect(kinds.length).toBeGreaterThan(3);
+      expect(kinds.every(Boolean)).toBe(true);
+      expect(new Set(kinds.map((k) => k.id)).size).toBe(kinds.length);
+    }
+  });
+
+  it('leads a side view with blocking and a top-down view with walkable', () => {
+    expect(maskKindsForView('side')[0]!.key).toBe('solid');
+    expect(maskKindsForView('topdown')[0]!.key).toBe('walkable');
+    expect(maskKindsForView('isometric')[0]!.key).toBe('walkable');
+    // Platforms and ladders are side-scroller ideas; a top-down map has none.
+    expect(maskKindsForView('side').map((k) => k.key)).toContain('platform');
+    expect(maskKindsForView('topdown').map((k) => k.key)).not.toContain('platform');
+    expect(maskKindsForView('topdown').map((k) => k.key)).not.toContain('ladder');
+  });
+
+  it('offers ramps and stairs where they can exist', () => {
+    for (const view of ['side', 'isometric', 'threequarter'] as const) {
+      const keys = maskKindsForView(view).map((k) => k.key);
+      expect(keys).toContain('ramp');
+      expect(keys).toContain('stairs');
+    }
+  });
+
+  it('keeps mask kind ids stable — they are stored in saved scenes', () => {
+    // Appending is fine; renumbering silently rewrites every saved mask.
+    expect(SCENE_MASK_KINDS.slice(0, 6).map((k) => [k.id, k.key])).toEqual([
+      [1, 'solid'],
+      [2, 'platform'],
+      [3, 'ladder'],
+      [4, 'water'],
+      [5, 'hazard'],
+      [6, 'trigger'],
+    ]);
+    const ids = SCENE_MASK_KINDS.map((k) => k.id);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    expect(new Set(ids).size).toBe(ids.length);
+    // Every id must fit what the schema will store.
+    expect(Math.max(...ids)).toBeLessThanOrEqual(31);
+  });
+
+  it('separates a ramp from stairs by friction, not by name alone', () => {
+    expect(defaultFriction('ramp')).toBeLessThan(defaultFriction('stairs'));
+    expect(defaultFriction('water')).toBeLessThan(defaultFriction('solid'));
+    expect(defaultFriction('trigger')).toBe(1); // no opinion
+  });
+
+  it('lets one shape override its layer default', () => {
+    const shape = SceneShapeSchema.parse({
+      id: 'sh_ice',
+      kind: 11,
+      type: 'triangle',
+      points: [
+        { x: 0, y: 10 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      friction: 0.1,
+      label: 'icy ramp',
+    });
+    expect(shape.friction).toBe(0.1);
+    expect(shape.label).toBe('icy ramp');
+    // Omitting it is legal — the layer's default then applies.
+    expect(
+      SceneShapeSchema.parse({ id: 'sh_p', kind: 11, type: 'rect', points: [] }).friction,
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The editor offers layers as glyphs now, so every kind needs one and no two
+ * may share it — an ambiguous icon row is unreadable, and a missing icon is
+ * a blank button.
+ */
+describe('mask kind icons', () => {
+  it('gives every kind exactly one distinct glyph', () => {
+    const icons = SCENE_MASK_KINDS.map((k) => k.icon);
+    expect(icons.every((i) => typeof i === 'string' && i.length > 0)).toBe(true);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
+
+  it('keeps the words too — they are the tooltip and the toast', () => {
+    for (const kind of SCENE_MASK_KINDS) {
+      expect(kind.label.length).toBeGreaterThan(0);
+      expect(kind.hint.length).toBeGreaterThan(0);
+      expect(kind.color).toMatch(/^#[0-9a-f]{6}$/i);
+    }
   });
 });

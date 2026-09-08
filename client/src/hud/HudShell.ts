@@ -164,6 +164,13 @@ class HudShellImpl {
       })();
     });
 
+    // Selects have the same disease as buttons: focus lingers after a
+    // choice, and then the ARROW keys keep changing the select while the
+    // user thinks they are steering the dummy or aiming the triangle.
+    document.addEventListener('change', (ev) => {
+      if (ev.target instanceof HTMLSelectElement) ev.target.blur();
+    });
+
     const toasts = document.createElement('div');
     toasts.id = 'genvy-toasts';
     this.root.appendChild(toasts);

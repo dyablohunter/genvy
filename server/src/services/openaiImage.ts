@@ -4,6 +4,7 @@ import type { ImageOrientation } from '@genvy/shared';
 const SIZES: Record<ImageOrientation, string> = {
   portrait: '1024x1536',
   landscape: '1536x1024',
+  square: '1024x1024',
 };
 
 /** Turn OpenAI moderation refusals into a clear, actionable message. */

@@ -123,6 +123,15 @@ export const api = {
     bumpUsage(request<{ result: T }>('POST', '/api/ai/text', body)),
   aiImage: (body: AiImageRequest) =>
     announceAiWork(body, () => bumpUsage(request<AiImageResult>('POST', '/api/ai/image', body))),
+  /** Change, merge or extend scene panels; costs one render per section. */
+  sceneModify: (body: import('@genvy/shared').SceneModifyRequest) =>
+    announceAiWork(
+      { prompt: body.instruction ?? '', orientation: 'landscape' },
+      () =>
+        bumpUsage(
+          request<import('@genvy/shared').SceneModifyResult>('POST', '/api/ai/scene-modify', body),
+        ),
+    ),
   usage: () => request<UsageResponse>('GET', '/api/usage'),
   /** Live server-side stage of the running AI op — the busy bar follows it. */
   activity: () => request<import('@genvy/shared').AiActivityResponse>('GET', '/api/ai/activity'),
@@ -179,6 +188,9 @@ export const api = {
   composeSheet: (body: ComposeSheetRequest) =>
     request<ComposeSheetResponse>('POST', '/api/image/compose-sheet', body),
 
+  /** Byte-faithful rectangle crop of a library image — free, no AI. */
+  cropRect: (body: import('@genvy/shared').CropRectRequest) =>
+    request<{ fileRef: import('@genvy/shared').FileRef }>('POST', '/api/image/crop-rect', body),
   removeBg: (body: RemoveBgRequest) =>
     request<{ fileRef: FileRef }>('POST', '/api/image/remove-bg', body),
   sliceSheet: (body: SliceSheetRequest) =>
