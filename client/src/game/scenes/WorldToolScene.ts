@@ -3719,8 +3719,72 @@ export class WorldToolScene extends Phaser.Scene {
     g.clear();
     // Playtest is for walking the level, not marking it: the nib ring and
     // its cell box are editor chrome and stay behind with the panels.
-    if (this.mode !== 'scene' || !this.sceneImage || this.spacePanning || this.inPlaytest) return;
+    if (this.spacePanning || this.inPlaytest || this.stage !== 'edit') return;
 
+    // --- Tile target: the stamp, in tile cells ---
+    if (!this.paintingZones) {
+      const ts = this.tileset;
+      if (!ts || !this.map) return;
+      const camZoom = this.cameras.main.zoom;
+      const tint = this.tool === 'erase' ? 0xff3d5a : 0x1de9ff;
+      const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const tx = Math.floor(world.x / ts.tileWidth);
+      const ty = Math.floor(world.y / ts.tileHeight);
+
+      if (this.maskTool === 'line' && this.penAnchor) {
+        g.lineStyle(2 / camZoom, tint, 0.5);
+        g.lineBetween(
+          (this.penAnchor.x + 0.5) * ts.tileWidth,
+          (this.penAnchor.y + 0.5) * ts.tileHeight,
+          (tx + 0.5) * ts.tileWidth,
+          (ty + 0.5) * ts.tileHeight,
+        );
+      }
+      if (this.maskTool === 'shape' && this.penPoints.length > 0) {
+        g.lineStyle(2 / camZoom, tint, 0.9);
+        for (let i = 0; i < this.penPoints.length - 1; i++) {
+          const a = this.penPoints[i]!;
+          const b = this.penPoints[i + 1]!;
+          g.lineBetween(a.x, a.y, b.x, b.y);
+        }
+        const last = this.penPoints[this.penPoints.length - 1]!;
+        g.lineStyle(1 / camZoom, tint, 0.5);
+        g.lineBetween(last.x, last.y, world.x, world.y);
+        if (this.penPoints.length >= 3) {
+          const first = this.penPoints[0]!;
+          const hot = this.closesShape({ x: world.x, y: world.y });
+          g.lineStyle(2 / camZoom, hot ? 0xffffff : tint, hot ? 1 : 0.7);
+          g.strokeCircle(first.x, first.y, this.closeTolerance());
+        }
+      }
+      if (this.shapeDrag) {
+        const dragged = this.dragToShape();
+        if (dragged) {
+          const outline = shapeOutline(dragged).map((q) => new Phaser.Math.Vector2(q.x, q.y));
+          if (outline.length >= 3) {
+            g.lineStyle(2 / camZoom, tint, 0.9);
+            g.strokePoints(outline, true, true);
+          }
+        }
+      }
+      // The stamp itself: the exact block a click would write, tinted and
+      // outlined. Every stamping tool gets it — a wide eraser with no bounds
+      // is aimed by guesswork.
+      if (this.maskTool !== 'shape' && this.maskTool !== 'fill') {
+        const off = Math.floor((this.brushSize - 1) / 2);
+        const bx = (tx - off) * ts.tileWidth;
+        const by = (ty - off) * ts.tileHeight;
+        const bw = this.brushSize * ts.tileWidth;
+        const bh = this.brushSize * ts.tileHeight;
+        g.fillStyle(tint, 0.18);
+        g.fillRect(bx, by, bw, bh);
+        g.lineStyle(2 / camZoom, tint, 0.95);
+        g.strokeRect(bx, by, bw, bh);
+      }
+      return;
+    }
+
+    if (!this.sceneImage) return;
     const zoom = this.cameras.main.zoom;
     // Previews must show what SHIFT will actually commit, not the free cursor.
     const px =
@@ -3788,7 +3852,7 @@ export class WorldToolScene extends Phaser.Scene {
       this.maskTool === 'line' ? this.penAnchor : this.painting ? this.strokeOrigin : null,
       raw,
     );
-    const r = this.brushSize - 1;
+    const r = this.brushSize / 2 - 0.5;
     if (this.maskTool === 'line' && this.penAnchor) {
       g.lineStyle(Math.max(thin, size * 0.35), color, 0.35);
       g.lineBetween(
@@ -3800,8 +3864,20 @@ export class WorldToolScene extends Phaser.Scene {
       g.fillStyle(color, 0.9);
       g.fillRect(this.penAnchor.x * size, this.penAnchor.y * size, size, size);
     }
-    g.lineStyle(thick, color, 0.95);
-    g.strokeCircle((cell.x + 0.5) * size, (cell.y + 0.5) * size, (r + 0.5) * size);
+    // The block a click covers, tinted, with the round nib inside it: the
+    // ring says WHERE the dab lands, the rectangle says HOW BIG it is.
+    if (this.maskTool !== 'fill') {
+      const off = Math.floor((this.brushSize - 1) / 2);
+      const bx = (cell.x - off) * size;
+      const by = (cell.y - off) * size;
+      const span = this.brushSize * size;
+      g.fillStyle(color, 0.15);
+      g.fillRect(bx, by, span, span);
+      g.lineStyle(thin, color, 0.55);
+      g.strokeRect(bx, by, span, span);
+      g.lineStyle(thick, color, 0.95);
+      g.strokeCircle((cell.x + 0.5) * size, (cell.y + 0.5) * size, (r + 0.5) * size);
+    }
     g.lineStyle(thin, color, 0.4);
     g.strokeRect(cell.x * size, cell.y * size, size, size);
   }
