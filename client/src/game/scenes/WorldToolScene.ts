@@ -94,6 +94,8 @@ export class WorldToolScene extends Phaser.Scene {
   private propImages: Phaser.GameObjects.Image[] = [];
   /** One prop per click — a drag must not smear a trail of them. */
   private propStamped = false;
+  /** Wide brush behaviour in tile modes: repeat the tile, or stretch one. */
+  private stretchTiles = false;
   private static readonly UNDO_LIMIT = 40;
   private conceptFields: HTMLElement | null = null;
   private editTextsBtn: GenvyButton | null = null;
@@ -204,7 +206,7 @@ export class WorldToolScene extends Phaser.Scene {
   private mask: number[][] = [];
   private maskCell = 16;
   private maskKind = 1;
-  private brushSize = 2;
+  private brushSize = 1;
   private maskVisible = true;
   private maskGfx: Phaser.GameObjects.Graphics | null = null;
   private maskPanel: ReturnType<typeof HudShell.makePanel> | null = null;
@@ -872,7 +874,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.mask = [];
     this.maskCell = 16;
     this.maskKind = 1;
-    this.brushSize = 2;
+    this.brushSize = 1;
     this.maskVisible = true;
     this.maskGfx = null;
     this.maskPanel = null;
@@ -1132,17 +1134,55 @@ export class WorldToolScene extends Phaser.Scene {
       UISound.play('click');
       this.setStage('concept');
     });
+    const layerSel = document.createElement('select');
+    for (const [value, label] of [
+      ['0', 'GROUND'],
+      ['1', 'DECOR'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      layerSel.appendChild(opt);
+    }
+    layerSel.addEventListener('change', () => {
+      UISound.play('click');
+      this.activeLayer = Number(layerSel.value) || 0;
+    });
+    const layerField = field('LAYER', layerSel);
+    layerField.dataset.tiles = '1';
+
+    // A wide brush can repeat the tile or stretch ONE across the stamp. That
+    // used to be an invisible consequence of the brush size; now it is asked.
+    const stampSel = document.createElement('select');
+    for (const [value, label] of [
+      ['repeat', 'REPEAT THE TILE'],
+      ['stretch', 'STRETCH ONE TILE'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      stampSel.appendChild(opt);
+    }
+    stampSel.addEventListener('change', () => {
+      UISound.play('click');
+      this.stretchTiles = stampSel.value === 'stretch';
+    });
+    const stampField = field('WIDE BRUSH', stampSel);
+    stampField.dataset.tiles = '1';
+
     const nameField = field('SCENE NAME', nameInput);
     const kindField = field('PAINT AS', kindRow);
     const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
       targetRow,
+      layerField,
       nameField,
       saveBtn,
       kindField,
       field('TOOL', penRow),
       frictionField,
       field('BRUSH SIZE', brushSel),
+      stampField,
       cellField,
       toolRow,
       clearBtn,
@@ -1306,8 +1346,13 @@ export class WorldToolScene extends Phaser.Scene {
   private refreshToolsPanel() {
     const panel = this.maskPanel;
     if (!panel) return;
+    // Zone sections follow the SCENE's existence, not the current target:
+    // in mixed mode both crafts are in play, so both toolsets stay to hand.
     panel.querySelectorAll<HTMLElement>('[data-zones]').forEach((el) => {
-      el.style.display = this.paintingZones ? '' : 'none';
+      el.style.display = this.sceneActive ? '' : 'none';
+    });
+    panel.querySelectorAll<HTMLElement>('[data-tiles]').forEach((el) => {
+      el.style.display = this.tilesActive ? '' : 'none';
     });
     panel.querySelectorAll<HTMLElement>('[data-mixed]').forEach((el) => {
       el.style.display = this.mode === 'mixed' ? '' : 'none';
@@ -1376,7 +1421,11 @@ export class WorldToolScene extends Phaser.Scene {
     } else {
       if (this.palettePanel) {
         HudShell.showPanel(this.palettePanel, 'left');
-        this.palettePanel.setTitle(this.tilesActive ? '01 · TILES' : '01 · SCENE');
+        // The panel is named for the KIND of level being built, so the
+        // header always answers "what am I making?".
+        this.palettePanel.setTitle(
+          `01 · ${{ tilemap: 'TILEMAP', scene: 'PAINTED', mixed: 'MIXED' }[this.mode]}`,
+        );
       }
       if (this.paletteSection) {
         this.paletteSection.style.display = this.tilesActive ? '' : 'none';
@@ -2825,18 +2874,6 @@ export class WorldToolScene extends Phaser.Scene {
     saveBtn.setAttribute('label', 'SAVE WORLD');
     const statusHost = document.createElement('div');
 
-    const layerRow = document.createElement('div');
-    layerRow.className = 'g-row';
-    (['GROUND', 'DECOR'] as const).forEach((name, i) => {
-      const b = document.createElement('genvy-button') as GenvyButton;
-      b.setAttribute('label', name);
-      b.onClick(() => {
-        this.activeLayer = i;
-        HudShell.toast(`EDITING LAYER: ${name}`);
-      });
-      layerRow.appendChild(b);
-    });
-
     const dims = document.createElement('div');
     dims.className = 'g-row';
     // Let the canvas follow the level: painting at the edge grows the map,
@@ -2864,7 +2901,6 @@ export class WorldToolScene extends Phaser.Scene {
     panel.append(
       field('WORLD NAME', this.worldNameIn),
       dims,
-      field('LAYER', layerRow),
       newBtn,
       saveBtn,
       statusHost,
@@ -2873,7 +2909,13 @@ export class WorldToolScene extends Phaser.Scene {
     newBtn.onClick(() => {
       if (!this.tileset) return HudShell.toast('FORGE OR LOAD A TILESET FIRST', 'error');
       this.worldId = null;
+      this.props = [];
+      this.plannedSpawns = [];
+      this.undoStack = [];
       this.buildMap(Number(this.widthIn.value) || 40, Number(this.heightIn.value) || 23);
+      // Layers built after the stage was last resolved come up hidden unless
+      // the stage is re-asserted — which looked exactly like "nothing happens".
+      this.refreshStage();
       HudShell.toast('BLANK WORLD READY — PAINT AWAY');
     });
 
@@ -3824,7 +3866,7 @@ export class WorldToolScene extends Phaser.Scene {
     const x0 = tx - off;
     const y0 = ty - off;
 
-    if (this.tool === 'brush' && this.brushSize > 1) {
+    if (this.tool === 'brush' && this.brushSize > 1 && this.stretchTiles) {
       // A wide brush paints ONE tile stretched over the block, not a grid of
       // repeats — nine stamped rocks read as nine rocks. One per click.
       if (this.propStamped) return;
