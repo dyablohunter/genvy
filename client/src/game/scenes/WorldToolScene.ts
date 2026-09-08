@@ -2827,15 +2827,22 @@ export class WorldToolScene extends Phaser.Scene {
       el.addEventListener('change', () => this.syncConceptFromFields());
     }
 
-    // The AI draws the sheet at 1024x1536 — 256px per cell natively — so
-    // 256 costs nothing in resampling. Smaller is a stylistic choice for
-    // chunkier art; 512 upscales.
+    // How big a tile is ON DISK, and therefore in world pixels. The AI draws
+    // the sheet at 256px per cell, so anything smaller is a clean nearest
+    // downscale of art that was rendered at full detail — quality comes from
+    // the RENDER, not from keeping every pixel. 64 keeps maps a sane size
+    // (a 40x23 map is 2560px wide, not 10k) and is the default.
     const tileSizeSel = document.createElement('select');
-    for (const size of [64, 128, 256, 512]) {
+    for (const [size, note] of [
+      [64, 'DEFAULT'],
+      [128, ''],
+      [256, 'FULL RENDER'],
+      [512, 'UPSCALED'],
+    ] as const) {
       const opt = document.createElement('option');
       opt.value = String(size);
-      opt.textContent = size === 256 ? '256 PX · NATIVE' : `${size} PX${size === 512 ? ' · UPSCALED' : ''}`;
-      if (size === 256) opt.selected = true;
+      opt.textContent = note ? `${size} PX · ${note}` : `${size} PX`;
+      if (size === 64) opt.selected = true;
       tileSizeSel.appendChild(opt);
     }
     this.tileSizeSel = tileSizeSel;
@@ -2952,7 +2959,7 @@ export class WorldToolScene extends Phaser.Scene {
           sourceFile: 'raw.png',
           cols: GRID_COLS,
           rows: GRID_ROWS,
-          targetTileSize: Number(this.tileSizeSel?.value) || 256,
+          targetTileSize: Number(this.tileSizeSel?.value) || 64,
           dedupe: false,
         });
         const tiles = Array.from({ length: extract.tileCount }, (_, i) => ({

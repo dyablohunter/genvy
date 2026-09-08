@@ -467,7 +467,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
     let cells = pipe.cutCells(raw, b);
 
-    const size = b.targetTileSize ?? 48;
+    const size = b.targetTileSize ?? 64;
     cells = await Promise.all(cells.map((c) => pipe.resizeCell(c, size, size, 'nearest')));
 
     let indexMap = cells.map((_, i) => i);
