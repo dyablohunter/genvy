@@ -3260,6 +3260,12 @@ export class WorldToolScene extends Phaser.Scene {
       this.load.start();
     });
     this.renderPalette();
+    if (this.tileSizeSel) {
+      const stored = String(ts.tileWidth);
+      if ([...this.tileSizeSel.options].some((o) => o.value === stored)) {
+        this.tileSizeSel.value = stored;
+      }
+    }
     if (this.editTextsBtn) this.editTextsBtn.style.display = '';
     /**
      * A tileset with no map to paint on is a dead end: every click silently
