@@ -216,6 +216,8 @@ export class WorldToolScene extends Phaser.Scene {
   /** Friction stamped onto new shapes; null = the layer's own default. */
   private shapeFriction: number | null = null;
   private brushSel: HTMLSelectElement | null = null;
+  /** Step 1's theme box, so a draft can restore it. */
+  private themeIn: HTMLTextAreaElement | null = null;
   /** Tile resolution for the next forge; existing tilesets keep their own. */
   private tileSizeSel: HTMLSelectElement | null = null;
   /** Which mask tool is armed. See MaskTool. */
@@ -276,6 +278,7 @@ export class WorldToolScene extends Phaser.Scene {
     const scenePanel = buildScenePanel({
       display: (scene) => this.displayScene(scene),
       current: () => this.activeScene,
+      dummy: () => this.openDummyModal(),
       busy: (label, fn, timing) => this.busy(null, label, fn, timing),
     });
     this.scenePanel = scenePanel;
@@ -308,7 +311,10 @@ export class WorldToolScene extends Phaser.Scene {
       this.buildPalettePanel(),
       this.buildWorldPanel(),
       this.buildMaskPanel(),
-    ]).then(() => this.refreshStage());
+    ]).then(() => {
+      this.refreshStage();
+      this.restoreConceptDraft();
+    });
     this.setMode('tilemap');
     this.setupCameraControls();
     this.setupPainting();
@@ -876,6 +882,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.onKindPicked = null;
     this.shapeFriction = null;
     this.brushSel = null;
+    this.themeIn = null;
     this.tileSizeSel = null;
     this.maskTool = 'freehand';
     this.penAnchor = null;
@@ -1119,30 +1126,15 @@ export class WorldToolScene extends Phaser.Scene {
     const backBtn = document.createElement('genvy-button') as GenvyButton;
     backBtn.setAttribute('label', '✎ EDIT CONCEPT');
     backBtn.title = 'Back to step 1: mode, texts, view and canvas';
-    backBtn.style.flex = '1 1 50%';
     backBtn.onClick(() => {
       UISound.play('click');
       this.setStage('concept');
     });
-    // The dummy lives with the tools, where the playtest happens — step 1
-    // has nothing to walk on yet.
-    const dummyBtn = document.createElement('genvy-button') as GenvyButton;
-    dummyBtn.setAttribute('label', 'DUMMY');
-    dummyBtn.title = 'Drop a controllable test character onto the scene';
-    dummyBtn.style.flex = '1 1 50%';
-    dummyBtn.onClick(() => {
-      UISound.play('click');
-      this.openDummyModal();
-    });
-    const headRow = document.createElement('div');
-    headRow.className = 'g-row';
-    headRow.append(backBtn, dummyBtn);
-
     const nameField = field('SCENE NAME', nameInput);
     const kindField = field('PAINT AS', kindRow);
     const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
-      headRow,
+      backBtn,
       targetRow,
       nameField,
       saveBtn,
@@ -1157,7 +1149,6 @@ export class WorldToolScene extends Phaser.Scene {
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
     // painting experience is identical between the two crafts.
-    dummyBtn.dataset.zones = '1';
     for (const el of [nameField, saveBtn, kindField, frictionField, cellField, showBtn, clearBtn]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
@@ -1225,6 +1216,33 @@ export class WorldToolScene extends Phaser.Scene {
     this.maskKindButtons.get(this.maskKind)?.setAttribute('variant', 'accent');
   }
 
+  /** Bring back unsaved step-1 text after a crash or a closed tab. */
+  private restoreConceptDraft() {
+    const draft = loadDraft<{
+      theme: string;
+      name: string;
+      art: string;
+      tiles: string;
+      tileSize: string;
+    }>('world:concept');
+    if (!draft) return;
+    const d = draft.data;
+    if (!d.theme && !d.art && !d.tiles) return;
+    if (d.theme && this.themeIn) this.themeIn.value = d.theme;
+    if (d.name) this.conceptNameIn.value = d.name;
+    if (d.art) this.conceptPromptIn.value = d.art;
+    if (d.tiles) this.conceptTilesIn.value = d.tiles;
+    if (d.tileSize && this.tileSizeSel) this.tileSizeSel.value = d.tileSize;
+    if ((d.art || d.tiles) && this.conceptFields) {
+      this.conceptFields.style.display = '';
+      this.syncConceptFromFields();
+    }
+    for (const el of [this.themeIn, this.conceptPromptIn, this.conceptTilesIn]) {
+      if (el) autoGrow.refresh(el);
+    }
+    HudShell.toast('UNSAVED CONCEPT TEXT RESTORED', 'warn');
+  }
+
   /** Edit stage, tile modes: the picker, and the way back to the words. */
   private buildPalettePanel() {
     const panel = HudShell.makePanel('01 · TILES', 'left');
@@ -1244,6 +1262,10 @@ export class WorldToolScene extends Phaser.Scene {
         this.conceptTilesIn.value = ts.tiles.map((t) => t.name).join('\n');
         this.conceptFields.style.display = '';
         for (const el of [this.conceptPromptIn, this.conceptTilesIn]) autoGrow.refresh(el);
+        // The fields now describe the SAVED tileset; make that the concept so
+        // re-forging draws what is on screen.
+        this.concept = null;
+        this.syncConceptFromFields();
       }
       this.setStage('concept');
     });
@@ -2598,6 +2620,24 @@ export class WorldToolScene extends Phaser.Scene {
     }
     this.tileSizeSel = tileSizeSel;
 
+    // Pre-forge text has no asset behind it: a closed tab used to take the
+    // theme and the tile list with it. Draft on every keystroke, restore on
+    // entry, clear when a tileset finally owns the words.
+    this.themeIn = prompt;
+    const saveConceptDraft = () => {
+      saveDraft('world:concept', {
+        theme: prompt.value,
+        name: this.conceptNameIn.value,
+        art: this.conceptPromptIn.value,
+        tiles: this.conceptTilesIn.value,
+        tileSize: tileSizeSel.value,
+      });
+    };
+    for (const el of [prompt, this.conceptNameIn, this.conceptPromptIn, this.conceptTilesIn]) {
+      el.addEventListener('input', saveConceptDraft);
+    }
+    tileSizeSel.addEventListener('change', saveConceptDraft);
+
     panel.append(
       field('DESCRIBE THE WORLD THEME', prompt),
       field('TILE SIZE', tileSizeSel),
@@ -2656,9 +2696,14 @@ export class WorldToolScene extends Phaser.Scene {
     });
 
     forgeBtn.onClick(async () => {
-      if (!this.concept) return HudShell.toast('GENERATE A CONCEPT FIRST', 'error');
-      // Whatever is in the fields right now is what gets drawn.
+      // Whatever is in the FIELDS right now is what gets drawn — typed by
+      // hand, generated, or seeded from a saved tileset by EDIT CONCEPT.
+      // Requiring a prior GENERATE left this button silently inert after a
+      // round trip through step 2.
       this.syncConceptFromFields();
+      if (!this.concept) {
+        return HudShell.toast('GENERATE A CONCEPT, OR WRITE THE TEXTS YOURSELF', 'error');
+      }
       // Re-forging with a tileset open replaces it instead of adding a
       // near-duplicate to the inventory (and orphaning worlds that use it).
       const reforgeId = this.tileset?.id ?? null;
@@ -2735,6 +2780,8 @@ export class WorldToolScene extends Phaser.Scene {
             'success',
           );
         }
+        // The tileset now owns these words on disk; the local draft is spent.
+        clearDraft('world:concept');
         // The concept did its job; the tools take over.
         this.setStage('edit');
       }, { key: 'tileset:image', fallbackMs: 50000 });
@@ -2940,13 +2987,29 @@ export class WorldToolScene extends Phaser.Scene {
     for (const el of [this.conceptPromptIn, this.conceptTilesIn]) autoGrow.refresh(el);
   }
 
-  /** Edits win over what the writer produced (the fields ARE the concept now). */
+  /**
+   * Edits win over what the writer produced (the fields ARE the concept
+   * now) — and when there is no concept yet, the fields BECOME one, so
+   * hand-written texts and a reopened tileset both forge.
+   */
   private syncConceptFromFields() {
-    if (!this.concept) return;
     const tiles = this.conceptTilesIn.value
       .split('\n')
       .map((t) => t.trim())
       .filter(Boolean);
+    if (!this.concept) {
+      const written = this.conceptPromptIn.value.trim();
+      if (!written && tiles.length === 0) return; // nothing to build from
+      this.concept = {
+        name: this.conceptNameIn.value.trim() || 'Untitled Tileset',
+        description: written,
+        imagePrompt: written,
+        tileNames: tiles,
+        collidingTiles: [],
+        tags: [],
+      };
+      return;
+    }
     this.concept = {
       ...this.concept,
       name: this.conceptNameIn.value.trim() || this.concept.name,
