@@ -276,7 +276,6 @@ export class WorldToolScene extends Phaser.Scene {
     const scenePanel = buildScenePanel({
       display: (scene) => this.displayScene(scene),
       current: () => this.activeScene,
-      dummy: () => this.openDummyModal(),
       busy: (label, fn, timing) => this.busy(null, label, fn, timing),
     });
     this.scenePanel = scenePanel;
@@ -1120,16 +1119,30 @@ export class WorldToolScene extends Phaser.Scene {
     const backBtn = document.createElement('genvy-button') as GenvyButton;
     backBtn.setAttribute('label', '✎ EDIT CONCEPT');
     backBtn.title = 'Back to step 1: mode, texts, view and canvas';
+    backBtn.style.flex = '1 1 50%';
     backBtn.onClick(() => {
       UISound.play('click');
       this.setStage('concept');
     });
+    // The dummy lives with the tools, where the playtest happens — step 1
+    // has nothing to walk on yet.
+    const dummyBtn = document.createElement('genvy-button') as GenvyButton;
+    dummyBtn.setAttribute('label', 'DUMMY');
+    dummyBtn.title = 'Drop a controllable test character onto the scene';
+    dummyBtn.style.flex = '1 1 50%';
+    dummyBtn.onClick(() => {
+      UISound.play('click');
+      this.openDummyModal();
+    });
+    const headRow = document.createElement('div');
+    headRow.className = 'g-row';
+    headRow.append(backBtn, dummyBtn);
 
     const nameField = field('SCENE NAME', nameInput);
     const kindField = field('PAINT AS', kindRow);
     const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
-      backBtn,
+      headRow,
       targetRow,
       nameField,
       saveBtn,
@@ -1144,6 +1157,7 @@ export class WorldToolScene extends Phaser.Scene {
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
     // painting experience is identical between the two crafts.
+    dummyBtn.dataset.zones = '1';
     for (const el of [nameField, saveBtn, kindField, frictionField, cellField, showBtn, clearBtn]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
@@ -2984,6 +2998,7 @@ export class WorldToolScene extends Phaser.Scene {
     const ts = this.tileset;
     const img = this.textures.get(this.tilesetKey).getSourceImage() as HTMLImageElement;
     const cols = Math.max(1, Math.floor(img.width / ts.tileWidth));
+    const rows = Math.max(1, Math.floor(img.height / ts.tileHeight));
     this.paletteHost.innerHTML = '';
     const grid = document.createElement('div');
     grid.className = 'g-tile-grid';
@@ -2993,11 +3008,16 @@ export class WorldToolScene extends Phaser.Scene {
       cell.className = 'g-tile';
       if (tile.collides) cell.classList.add('collides');
       if (tile.index === this.selectedTile) cell.classList.add('selected');
-      const x = (tile.index % cols) * ts.tileWidth;
-      const y = Math.floor(tile.index / cols) * ts.tileHeight;
+      const col = tile.index % cols;
+      const row = Math.floor(tile.index / cols);
       cell.style.backgroundImage = `url(${url})`;
-      cell.style.backgroundSize = `${(img.width / ts.tileWidth) * 100}% auto`;
-      cell.style.backgroundPosition = `-${(x / ts.tileWidth) * 100}% -${(y / ts.tileHeight) * 100}%`;
+      // Explicit size on BOTH axes and positive fractional positions: the
+      // old auto-height + negative-percentage arithmetic only held for some
+      // sheet shapes, and a repacked sheet broke it into half-tiles.
+      cell.style.backgroundSize = `${cols * 100}% ${rows * 100}%`;
+      cell.style.backgroundPosition = `${cols > 1 ? (col / (cols - 1)) * 100 : 0}% ${
+        rows > 1 ? (row / (rows - 1)) * 100 : 0
+      }%`;
       cell.title = tile.name;
       cell.addEventListener('click', () => {
         UISound.play('click');

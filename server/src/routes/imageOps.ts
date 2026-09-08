@@ -486,8 +486,9 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       cells = unique;
     }
 
-    const cols = Math.min(cells.length, 8);
-    const packed = pipe.packCells(cells, cols);
+    // Pack at the GRID'S OWN column count. Repacking 24 tiles at 8-wide made
+    // a 2048px sheet whose layout matched nothing the client assumed.
+    const packed = pipe.packCells(cells, Math.min(cells.length, b.cols));
     const png = await pipe.toPng(packed);
     const rel = await save(b.assetId, 'tileset.png', png);
     const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
