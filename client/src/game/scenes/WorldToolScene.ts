@@ -798,9 +798,16 @@ export class WorldToolScene extends Phaser.Scene {
     this.dummy?.destroy();
     const at = this.findPlayerSpawn();
     if (!at) {
-      HudShell.toast('NO PLAYER SPAWN — SPAWNING AT THE CENTRE', 'warn');
+      HudShell.toast('NO PLAYER SPAWN — SPAWNING WHERE YOU ARE LOOKING', 'warn');
     }
-    const spawn = at ?? { x: bounds.width / 2, y: bounds.height / 2 };
+    // Without a painted spawn, drop it in the MIDDLE OF THE VIEW rather than
+    // the middle of the level: on a big map those are far apart, and the
+    // figure appearing off-screen reads as it not having spawned at all.
+    const cam = this.cameras.main;
+    const spawn = at ?? {
+      x: Phaser.Math.Clamp(cam.scrollX + cam.width / 2 / cam.zoom, 0, bounds.width),
+      y: Phaser.Math.Clamp(cam.scrollY + cam.height / 2 / cam.zoom, 0, bounds.height),
+    };
     const dummy = new SceneDummy(this, opts, {
       maskAt: (x, y) => this.collisionAt(x, y),
       shapes: () => this.shapes,
@@ -811,8 +818,11 @@ export class WorldToolScene extends Phaser.Scene {
     });
     await dummy.spawn(spawn.x, spawn.y);
     this.dummy = dummy;
-    // Centre on it NOW rather than easing there over the first second.
-    this.cameras.main.centerOn(dummy.position.x, dummy.position.y);
+    // Centre on it NOW rather than easing there over the first second. Any
+    // bounds left over from a previous fullscreen playtest would clamp this
+    // into a corner, so they go first.
+    cam.removeBounds();
+    cam.centerOn(dummy.position.x, dummy.position.y);
     HudShell.toast(
       'DUMMY OUT — WASD/ARROWS, SHIFT RUNS' +
         (opts.gravity > 0 && opts.jumps > 0 ? ', SPACE JUMPS' : ''),
