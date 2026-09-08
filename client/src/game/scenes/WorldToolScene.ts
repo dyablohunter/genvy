@@ -1281,23 +1281,6 @@ export class WorldToolScene extends Phaser.Scene {
       UISound.play('click');
       this.setStage('concept');
     });
-    const layerSel = document.createElement('select');
-    for (const [value, label] of [
-      ['0', 'GROUND'],
-      ['1', 'DECOR'],
-    ] as const) {
-      const opt = document.createElement('option');
-      opt.value = value;
-      opt.textContent = label;
-      layerSel.appendChild(opt);
-    }
-    layerSel.addEventListener('change', () => {
-      UISound.play('click');
-      this.activeLayer = Number(layerSel.value) || 0;
-    });
-    const layerField = field('LAYER', layerSel);
-    layerField.dataset.tiles = '1';
-
     // A wide brush can repeat the tile or stretch ONE across the stamp. That
     // used to be an invisible consequence of the brush size; now it is asked.
     const stampSel = document.createElement('select');
@@ -1322,7 +1305,6 @@ export class WorldToolScene extends Phaser.Scene {
     const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
       targetRow,
-      layerField,
       nameField,
       saveBtn,
       kindField,
