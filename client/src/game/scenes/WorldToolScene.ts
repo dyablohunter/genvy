@@ -220,7 +220,6 @@ export class WorldToolScene extends Phaser.Scene {
   private maskGfx: Phaser.GameObjects.Graphics | null = null;
   private maskPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private maskKindButtons = new Map<number, GenvyButton>();
-  private sceneNameInput: HTMLInputElement | null = null;
   /** The PAINT AS row, rebuilt whenever the scene's view changes. */
   private kindRow: HTMLElement | null = null;
   /** Whether the row shows every layer or just this view's. */
@@ -874,7 +873,7 @@ export class WorldToolScene extends Phaser.Scene {
   private writeDraft() {
     if (this.sceneActive && this.activeScene) {
       saveDraft(`world:scene:${this.activeScene.id}`, {
-        name: this.sceneNameInput?.value ?? '',
+        name: this.levelNameIn.value,
         maskCell: this.maskCell,
         mask: packGrid(this.mask),
         shapes: this.shapes,
@@ -909,7 +908,7 @@ export class WorldToolScene extends Phaser.Scene {
       }
     }
     if (Array.isArray(d.shapes)) this.shapes = d.shapes;
-    if (d.name && this.sceneNameInput) this.sceneNameInput.value = d.name;
+    if (d.name) this.levelNameIn.value = d.name;
     this.drawMask();
     this.drawShapes();
     const mins = Math.max(1, Math.round((Date.now() - draft.savedAt) / 60000));
@@ -1030,7 +1029,6 @@ export class WorldToolScene extends Phaser.Scene {
     this.maskPanel = null;
     this.overlayBtn = null;
     this.maskKindButtons = new Map();
-    this.sceneNameInput = null;
     this.kindRow = null;
     this.showAllKinds = false;
     this.onKindPicked = null;
@@ -1074,7 +1072,7 @@ export class WorldToolScene extends Phaser.Scene {
    * backdrop is only a picture until something says which pixels are solid.
    */
   private buildMaskPanel() {
-    const panel = HudShell.makePanel('04 · PAINTING', 'right');
+    const panel = HudShell.makePanel('03 · PAINTING', 'right');
     this.maskPanel = panel;
 
     // The level's layer stack. Every stroke lands on exactly one of these,
@@ -1256,14 +1254,6 @@ export class WorldToolScene extends Phaser.Scene {
       HudShell.toast('MASK AND SHAPES CLEARED');
     });
 
-    // Saving is the panel's headline action, so it sits at the top with the
-    // name beside it rather than buried under six paint controls.
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.placeholder = 'SCENE NAME';
-    nameInput.addEventListener('input', () => (this.draftDirty = true));
-    this.sceneNameInput = nameInput;
-
 
 
     const toolRow = document.createElement('div');
@@ -1300,12 +1290,10 @@ export class WorldToolScene extends Phaser.Scene {
     const stampField = field('WIDE BRUSH', stampSel);
     stampField.dataset.tiles = '1';
 
-    const nameField = field('SCENE NAME', nameInput);
     const kindField = field('PAINT AS', kindRow);
     const cellField = field('MASK RESOLUTION', cellSel);
     panel.append(
       targetRow,
-      nameField,
       kindField,
       field('TOOL', penRow),
       frictionField,
@@ -1318,7 +1306,7 @@ export class WorldToolScene extends Phaser.Scene {
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
     // painting experience is identical between the two crafts.
-    for (const el of [nameField, kindField, frictionField, cellField, showBtn, clearBtn]) {
+    for (const el of [kindField, frictionField, cellField, showBtn, clearBtn]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
     targetRow.dataset.mixed = '1';
@@ -1507,12 +1495,13 @@ export class WorldToolScene extends Phaser.Scene {
     hint.textContent = 'CLICK A TILE TO PAINT WITH IT. RIGHT-CLICK TOGGLES COLLISION (RED DOT).';
 
     this.paletteHost = document.createElement('div');
+    this.levelNameIn.addEventListener('input', () => (this.draftDirty = true));
     // The picker and its instruction belong to tile modes only; the buttons
     // above them belong to every mode.
     this.paletteSection = document.createElement('div');
     this.paletteSection.className = 'g-field-stack';
     this.paletteSection.append(hint, this.paletteHost);
-    panel.append(editBtn, dummyBtn, this.paletteSection);
+    panel.append(field('LEVEL NAME', this.levelNameIn), editBtn, dummyBtn, this.paletteSection);
     return panel;
   }
 
@@ -2224,7 +2213,6 @@ export class WorldToolScene extends Phaser.Scene {
     const height = vertical ? offset : Math.max(...this.sceneImages.map((i) => i.height), 1);
     this.stripSize = { width, height };
 
-    if (this.sceneNameInput) this.sceneNameInput.value = scene.name;
     if (this.stage !== 'edit') this.setStage('edit');
     this.renderKindRow(); // a top-down scene needs different layers than a side one
     this.scenePanel?.refresh();
@@ -3058,13 +3046,7 @@ export class WorldToolScene extends Phaser.Scene {
 
     const dimsField = dims;
     dimsField.dataset.tiles = '1';
-    panel.append(
-      field('LEVEL NAME', this.levelNameIn),
-      dimsField,
-      newBtn,
-      saveBtn,
-      statusHost,
-    );
+    panel.append(dimsField, newBtn, saveBtn, statusHost);
 
     newBtn.onClick(() => {
       if (!this.tileset) return HudShell.toast('FORGE OR LOAD A TILESET FIRST', 'error');
@@ -4186,17 +4168,9 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private async saveLevel(): Promise<{ created: boolean }> {
     const name = this.levelNameIn.value.trim() || 'Untitled Level';
-    // The backdrop's own edits (its name, its strip) belong to the scene
-    // asset; the zones painted over it belong to the level.
-    if (this.activeScene) {
-      const sceneName = this.sceneNameInput?.value.trim();
-      if (sceneName && sceneName !== this.activeScene.name) {
-        this.activeScene = await api.updateAsset<Scene>(this.activeScene.id, {
-          ...this.activeScene,
-          name: sceneName,
-        });
-      }
-    }
+    // The backdrop keeps the name it was painted with: it is a PART of this
+    // level (like the tileset), and naming the parts separately was asking
+    // the same question twice.
 
     const payload: Record<string, unknown> = {
       name,
