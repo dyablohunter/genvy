@@ -6,6 +6,7 @@ import { CharacterSchema } from './character.js';
 import { TilesetSchema } from './tileset.js';
 import { WorldSchema } from './world.js';
 import { SceneSchema } from './scene.js';
+import { LevelSchema } from './level.js';
 
 export * from './base.js';
 export * from './spritesheet.js';
@@ -14,6 +15,7 @@ export * from './character.js';
 export * from './tileset.js';
 export * from './world.js';
 export * from './scene.js';
+export * from './level.js';
 export * from './aiConcepts.js';
 export * from './styleContract.js';
 
@@ -28,6 +30,7 @@ export const assetSchemaRegistry = {
   tileset: TilesetSchema,
   world: WorldSchema,
   scene: SceneSchema,
+  level: LevelSchema,
 } satisfies Partial<Record<AssetType, z.ZodTypeAny>>;
 
 export type ImplementedAssetType = keyof typeof assetSchemaRegistry;
@@ -38,7 +41,8 @@ export type AnyAsset =
   | z.infer<typeof CharacterSchema>
   | z.infer<typeof TilesetSchema>
   | z.infer<typeof WorldSchema>
-  | z.infer<typeof SceneSchema>;
+  | z.infer<typeof SceneSchema>
+  | z.infer<typeof LevelSchema>;
 
 export function getAssetSchema(type: string): z.ZodTypeAny | undefined {
   return (assetSchemaRegistry as Record<string, z.ZodTypeAny>)[type];

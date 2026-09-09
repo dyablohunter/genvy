@@ -13,6 +13,7 @@ export const ID_PREFIXES = {
   tileset: 'tls',
   world: 'wld',
   scene: 'scn',
+  level: 'lvl',
   npc: 'npc',
   enemy: 'enm',
   item: 'itm',

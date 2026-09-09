@@ -85,6 +85,12 @@ Keeping this accurate and informative is an ongoing job, not a finished feature:
 - Backdrops must redraw on `Phaser.Scale.Events.RESIZE` (`game/backdrop.ts`) — a grid painted once keeps the window size it was born with.
 - Textareas holding AI prose use `autoGrow` rather than fixed heights; a hidden textarea measures 0, so fill it *after* showing its panel.
 
+### Levels are layers, not types (World Maker)
+
+A **level** is whichever layers it happens to have — a painted backdrop, a tile grid, gameplay zones, or any combination — so the editor never asks "what type of level is this?". There are no tilemap/painted/mixed modes: step 1 offers both generators (forge a tileset, paint a backdrop), step 2 gives one toolset aimed at a layer (`BACKDROP · TILES · ZONES`), and layers the level does not have are simply not offered.
+
+`level` (`shared/src/schemas/level.ts`) is the asset you save: it owns the grid, the zones, the props and the spawns, and REFERENCES the scene and tileset it is built from. Those keep their own types on purpose — a scene is artwork that re-forges, a tileset is a palette other levels share. Two save buttons writing two assets for one level was the clearest sign the modes were never real; there is one **SAVE LEVEL**. `world` assets still open (their grid becomes the level's) and save forward as levels.
+
 ### Adding a tool
 
 Register asset schemas in `assetSchemaRegistry` (`shared/src/schemas/index.ts`), add system prompts in `server/src/prompts/`, flip `ready: true` in `shared/src/tools.ts`, and follow the existing scene + HUD-panel pattern (SpriteToolScene / WorldToolScene are the references). Wire every AI call per **Progress feedback** above, and every save per **One session, one asset** above.

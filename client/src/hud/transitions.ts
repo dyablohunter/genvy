@@ -16,6 +16,7 @@ const TYPE_TO_TOOL: Record<string, string> = {
   tileset: 'worldTool',
   world: 'worldTool',
   scene: 'worldTool',
+  level: 'worldTool',
 };
 
 /**

@@ -18,6 +18,8 @@ import {
   type SceneSegment,
   type Character,
   type WorldProp,
+  type Level,
+  type LevelLayer,
 } from '@genvy/shared';
 
 /** Which way a strip travels, and which side an extension grows towards. */
@@ -69,6 +71,10 @@ export class WorldToolScene extends Phaser.Scene {
   private tilesetKey = '';
   private concept: TilesetConcept | null = null;
   private worldId: string | null = null;
+  /** The level this session is editing — the one thing SAVE writes. */
+  private levelId: string | null = null;
+  /** The level's name, shared by both halves of the editor. */
+  private levelNameIn = textInput('New Level', '');
 
   private map: Phaser.Tilemaps.Tilemap | null = null;
   /** Faint tile grid drawn under the layers. */
@@ -81,7 +87,6 @@ export class WorldToolScene extends Phaser.Scene {
   /** Painting at the edge extends the map instead of being clipped. */
   private autoGrow = false;
 
-  private worldNameIn = textInput('New World', '');
   private widthIn = numberInput(40, 8, 200);
   private heightIn = numberInput(23, 8, 200);
   private paletteHost: HTMLElement | null = null;
@@ -111,34 +116,35 @@ export class WorldToolScene extends Phaser.Scene {
   /** Provider/model/size/quality controls shared with the Sprite Forge. */
   private providerControls: ProviderControls | null = null;
   /** Which kind of level is being built: a tilemap or a painted scene. */
-  private mode: 'tilemap' | 'scene' | 'mixed' = 'tilemap';
-  private modeButtons = new Map<'tilemap' | 'scene' | 'mixed', GenvyButton>();
+  /**
+   * Which layer strokes land on. A level is not a TYPE — it is whichever
+   * layers it happens to have — so there is no mode to choose, only a layer
+   * to aim at. `backdrop` is selectable but not paintable: the AI paints it.
+   */
+  private layer: LevelLayer = 'tiles';
+  private layerButtons = new Map<LevelLayer, GenvyButton>();
   /**
    * Two steps, like the sprite forge: CONCEPT (choose the kind of level and
    * write/generate its texts) and EDIT (the tools). Forging moves forward;
    * EDIT CONCEPT moves back.
    */
   private stage: 'concept' | 'edit' = 'concept';
-  /** Mixed mode paints two things; this says which the tools hit. */
-  private paintTarget: 'tiles' | 'zones' = 'tiles';
-
-  /** A painted backdrop exists in this mode. */
+  /** This level has a painted backdrop. */
   private get sceneActive() {
-    return this.mode !== 'tilemap';
+    return this.activeScene !== null;
   }
 
-  /** Tile layers exist in this mode. */
+  /** This level has a tile grid. */
   private get tilesActive() {
-    return this.mode !== 'scene';
+    return this.map !== null && this.tileset !== null;
   }
 
-  /** What a stroke writes right now: mask zones, or tiles. */
+  /** What a stroke writes right now: gameplay zones, or tiles. */
   private get paintingZones() {
-    return this.mode === 'scene' || (this.mode === 'mixed' && this.paintTarget === 'zones');
+    return this.layer === 'zones';
   }
   private tilesetPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private worldPanel: ReturnType<typeof HudShell.makePanel> | null = null;
-  private modePanel: ReturnType<typeof HudShell.makePanel> | null = null;
   /** Step 1 as one centred panel, the way the sprite forge opens. */
   private conceptPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private tilesetSection: HTMLElement | null = null;
@@ -288,10 +294,9 @@ export class WorldToolScene extends Phaser.Scene {
       busy: (label, fn, timing) => this.busy(null, label, fn, timing),
     });
     this.scenePanel = scenePanel;
-    // Step 1 is ONE centred panel: the mode choice and the concept fields of
-    // whichever crafts that mode needs, transplanted out of their panels so
-    // the step reads as a single screen rather than two docked columns.
-    this.modePanel = this.buildModePanel();
+    // Step 1 is ONE centred panel offering BOTH generators: forge a tileset,
+    // paint a backdrop, or do either later. A level is whichever layers it
+    // ends up with, so nothing is chosen up front.
     const tilesetPanel = this.buildTilesetPanel();
     const conceptPanel = HudShell.makePanel('01 · CONCEPT', 'center');
     this.conceptPanel = conceptPanel;
@@ -304,10 +309,9 @@ export class WorldToolScene extends Phaser.Scene {
       section.append(...Array.from(panel.childNodes));
       return section;
     };
-    const modeSection = sectionOf(this.modePanel);
     this.tilesetSection = sectionOf(tilesetPanel);
     this.sceneSection = sectionOf(scenePanel.panel);
-    conceptPanel.append(modeSection, this.tilesetSection, this.sceneSection);
+    conceptPanel.append(this.tilesetSection, this.sceneSection);
 
     // Re-assert the current stage once the layout has actually mounted:
     // setLayout re-docks panels asynchronously, and whatever showPanel did
@@ -321,7 +325,6 @@ export class WorldToolScene extends Phaser.Scene {
       this.refreshStage();
       this.restoreConceptDraft();
     });
-    this.setMode('tilemap');
     this.setupCameraControls();
     this.setupPainting();
     // Crash insurance: unsaved strokes go to a draft every few seconds and
@@ -836,10 +839,11 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private edgePan(deltaMs: number) {
     const p = this.edgePointer;
-    // Painted mode only. In tilemap mode the pointer commutes constantly
-    // between the map and the palette, and every trip across the canvas edge
-    // scooted the map out from under the next click.
-    if (this.mode !== 'scene') return;
+    // Only while painting ZONES over a backdrop. With a tile palette on
+    // screen the pointer commutes constantly between map and palette, and
+    // every trip across the canvas edge scooted the map out from under the
+    // next click.
+    if (!this.paintingZones || !this.sceneActive) return;
     // Not while something else owns the camera: the pan grab, or the dummy's
     // follow — autoscroll under those reads as the view running away.
     if (!p || !p.overCanvas || this.spacePanning || this.dummy?.active) return;
@@ -878,7 +882,7 @@ export class WorldToolScene extends Phaser.Scene {
     }
     if (this.tilesActive && this.map && this.tileset) {
       saveDraft(this.worldId ? `world:world:${this.worldId}` : `world:new:${this.tileset.id}`, {
-        name: this.worldNameIn.value,
+        name: this.levelNameIn.value,
         layers: this.layers.map((l) => packGrid(this.layerToData(l))),
         spawns: this.plannedSpawns,
         props: this.props,
@@ -935,7 +939,7 @@ export class WorldToolScene extends Phaser.Scene {
         });
       });
     });
-    if (d.name) this.worldNameIn.value = d.name;
+    if (d.name) this.levelNameIn.value = d.name;
     if (Array.isArray(d.spawns) && d.spawns.length > 0) this.plannedSpawns = d.spawns;
     if (Array.isArray(d.props)) {
       this.props = d.props;
@@ -976,6 +980,8 @@ export class WorldToolScene extends Phaser.Scene {
     this.tilesetKey = '';
     this.concept = null;
     this.worldId = null;
+    this.levelId = null;
+    this.levelNameIn = textInput('New Level', '');
     this.map = null;
     this.gridGfx = null;
     this.layers = [];
@@ -984,7 +990,6 @@ export class WorldToolScene extends Phaser.Scene {
     this.tool = 'brush';
     this.painting = false;
     this.autoGrow = false;
-    this.worldNameIn = textInput('New World', '');
     this.widthIn = numberInput(40, 8, 200);
     this.heightIn = numberInput(23, 8, 200);
     this.paletteHost = null;
@@ -992,13 +997,11 @@ export class WorldToolScene extends Phaser.Scene {
     this.editTextsBtn = null;
     this.plannedSpawns = [];
     this.providerControls = null;
-    this.mode = 'tilemap';
     this.stage = 'concept';
-    this.paintTarget = 'tiles';
-    this.modeButtons = new Map();
+    this.layer = 'tiles';
+    this.layerButtons = new Map();
     this.tilesetPanel = null;
     this.worldPanel = null;
-    this.modePanel = null;
     this.conceptPanel = null;
     this.tilesetSection = null;
     this.sceneSection = null;
@@ -1074,31 +1077,31 @@ export class WorldToolScene extends Phaser.Scene {
     const panel = HudShell.makePanel('04 · PAINTING', 'right');
     this.maskPanel = panel;
 
-    // Mixed mode paints two different things; every stroke needs to know
-    // which. TILES hits the grid, ZONES hits the collision layer on top.
+    // The level's layer stack. Every stroke lands on exactly one of these,
+    // and a layer the level does not have is simply not offered.
     const targetRow = document.createElement('div');
     targetRow.className = 'g-row';
-    const targetButtons = new Map<'tiles' | 'zones', GenvyButton>();
     for (const [id, label] of [
-      ['tiles', 'PAINT TILES'],
-      ['zones', 'PAINT ZONES'],
+      ['backdrop', 'BACKDROP'],
+      ['tiles', 'TILES'],
+      ['zones', 'ZONES'],
     ] as const) {
       const btn = document.createElement('genvy-button') as GenvyButton;
       btn.setAttribute('label', label);
-      btn.style.flex = '1 1 50%';
+      btn.style.flex = '1 1 33%';
+      btn.title =
+        id === 'backdrop'
+          ? 'The painted artwork. Selected to work on it in step 1; strokes do not apply here.'
+          : id === 'tiles'
+            ? 'The tile grid.'
+            : 'Collision and gameplay zones over everything.';
       btn.onClick(() => {
         UISound.play('click');
-        this.paintTarget = id;
-        this.endPenPath(true);
-        for (const [otherId, b] of targetButtons) {
-          b.setAttribute('variant', otherId === id ? 'accent' : '');
-        }
-        this.refreshToolsPanel();
+        this.setLayer(id);
       });
-      targetButtons.set(id, btn);
+      this.layerButtons.set(id, btn);
       targetRow.appendChild(btn);
     }
-    targetButtons.get('tiles')?.setAttribute('variant', 'accent');
 
     const kindRow = document.createElement('div');
     kindRow.className = 'g-row';
@@ -1261,10 +1264,7 @@ export class WorldToolScene extends Phaser.Scene {
     nameInput.addEventListener('input', () => (this.draftDirty = true));
     this.sceneNameInput = nameInput;
 
-    const saveBtn = document.createElement('genvy-button') as GenvyButton;
-    saveBtn.setAttribute('variant', 'accent');
-    saveBtn.setAttribute('label', 'SAVE SCENE');
-    saveBtn.onClick(() => void this.saveMask());
+
 
     const toolRow = document.createElement('div');
     toolRow.className = 'g-row';
@@ -1306,7 +1306,6 @@ export class WorldToolScene extends Phaser.Scene {
     panel.append(
       targetRow,
       nameField,
-      saveBtn,
       kindField,
       field('TOOL', penRow),
       frictionField,
@@ -1319,7 +1318,7 @@ export class WorldToolScene extends Phaser.Scene {
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
     // painting experience is identical between the two crafts.
-    for (const el of [nameField, saveBtn, kindField, frictionField, cellField, showBtn, clearBtn]) {
+    for (const el of [nameField, kindField, frictionField, cellField, showBtn, clearBtn]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
     targetRow.dataset.mixed = '1';
@@ -1524,6 +1523,10 @@ export class WorldToolScene extends Phaser.Scene {
    * work. Mixed mode adds the switch saying which of the two a stroke hits.
    */
   private refreshToolsPanel() {
+    // The level panel hides its grid-only rows the same way.
+    for (const el of this.worldPanel?.querySelectorAll<HTMLElement>('[data-tiles]') ?? []) {
+      el.style.display = this.tilesActive ? '' : 'none';
+    }
     const panel = this.maskPanel;
     if (!panel) return;
     // Zone sections follow the SCENE's existence, not the current target:
@@ -1534,40 +1537,23 @@ export class WorldToolScene extends Phaser.Scene {
     panel.querySelectorAll<HTMLElement>('[data-tiles]').forEach((el) => {
       el.style.display = this.tilesActive ? '' : 'none';
     });
-    panel.querySelectorAll<HTMLElement>('[data-mixed]').forEach((el) => {
-      el.style.display = this.mode === 'mixed' ? '' : 'none';
-    });
-  }
-
-  /** Mode switch: a tilemap level and a painted scene are different crafts. */
-  private buildModePanel() {
-    const panel = HudShell.makePanel('MODE', 'left');
-    const row = document.createElement('div');
-    row.className = 'g-row';
-    for (const [mode, label] of [
-      ['tilemap', 'TILEMAP'],
-      ['scene', 'PAINTED'],
-      ['mixed', 'MIXED'],
-    ] as const) {
-      const btn = document.createElement('genvy-button') as GenvyButton;
-      btn.setAttribute('label', label);
-      btn.onClick(() => {
-        UISound.play('click');
-        this.setMode(mode);
-      });
-      this.modeButtons.set(mode, btn);
-      row.appendChild(btn);
+    for (const [id, btn] of this.layerButtons) {
+      // Only layers this level HAS are offered, and the armed one is lit.
+      const present = id === 'backdrop' ? this.sceneActive : id === 'tiles' ? this.tilesActive : true;
+      btn.style.display = present ? '' : 'none';
+      btn.setAttribute('variant', id === this.layer ? 'accent' : '');
     }
-    panel.append(row);
-    return panel;
   }
 
-  private setMode(mode: 'tilemap' | 'scene' | 'mixed') {
-    this.mode = mode;
-    // Mixed starts on tiles: the backdrop goes in first, zones come after.
-    if (mode !== 'mixed') this.paintTarget = mode === 'scene' ? 'zones' : 'tiles';
-    for (const [id, btn] of this.modeButtons) {
-      btn.setAttribute('variant', id === mode ? 'accent' : '');
+  /** Aim the tools at one layer of the level. */
+  private setLayer(layer: LevelLayer) {
+    this.layer = layer;
+    this.endPenPath(true);
+    if (layer === 'backdrop') {
+      // The backdrop is painted by the model, not by a brush: selecting it
+      // takes you to where it IS edited rather than pretending otherwise.
+      this.setStage('concept');
+      return;
     }
     this.refreshStage();
   }
@@ -1596,21 +1582,24 @@ export class WorldToolScene extends Phaser.Scene {
         HudShell.showPanel(this.conceptPanel, 'center');
         this.conceptPanel.style.width = 'min(720px, 90vw)';
       }
-      if (this.tilesetSection) this.tilesetSection.style.display = this.tilesActive ? '' : 'none';
-      if (this.sceneSection) this.sceneSection.style.display = this.sceneActive ? '' : 'none';
+      // Both generators stay offered: a level can gain a backdrop or a tile
+      // palette at any point, and hiding one would make that a mode again.
+      if (this.tilesetSection) this.tilesetSection.style.display = '';
+      if (this.sceneSection) this.sceneSection.style.display = '';
     } else {
       if (this.palettePanel) {
         HudShell.showPanel(this.palettePanel, 'left');
-        // The panel is named for the KIND of level being built, so the
-        // header always answers "what am I making?".
-        this.palettePanel.setTitle(
-          `01 · ${{ tilemap: 'TILEMAP', scene: 'PAINTED', mixed: 'MIXED' }[this.mode]}`,
-        );
+        // Named for what the level HAS, so the header answers "what am I
+        // working with?" without there being a type to answer for.
+        const parts = [this.sceneActive ? 'BACKDROP' : '', this.tilesActive ? 'TILES' : '']
+          .filter(Boolean)
+          .join(' + ');
+        this.palettePanel.setTitle(`01 · ${parts || 'LEVEL'}`);
       }
       if (this.paletteSection) {
         this.paletteSection.style.display = this.tilesActive ? '' : 'none';
       }
-      if (this.tilesActive && this.worldPanel) HudShell.showPanel(this.worldPanel, 'right');
+      if (this.worldPanel) HudShell.showPanel(this.worldPanel, 'right');
       if (this.maskPanel) HudShell.showPanel(this.maskPanel, 'right');
       this.refreshToolsPanel();
     }
@@ -1623,7 +1612,9 @@ export class WorldToolScene extends Phaser.Scene {
     this.gridGfx?.setVisible(showTiles);
     for (const img of this.sceneImages) {
       img.setVisible(showScene);
-      img.setDepth(this.mode === 'mixed' ? -5 : 0);
+      // The backdrop is always BEHIND the grid — that is what makes it a
+      // backdrop — and harmless when there is no grid.
+      img.setDepth(-5);
     }
     this.maskGfx?.setVisible(showScene && this.maskVisible);
     this.shapeGfx?.setVisible(showScene && this.maskVisible);
@@ -2183,41 +2174,6 @@ export class WorldToolScene extends Phaser.Scene {
       this.drawMask();
       this.draftDirty = true;
     }
-  }
-
-  /**
-   * Persist the scene: its name and the painted mask, onto the SAME asset it
-   * was loaded from. Saving must never mint a second copy in the inventory.
-   */
-  private async saveMask() {
-    const scene = this.activeScene;
-    if (!scene) return HudShell.toast('PAINT OR OPEN A SCENE FIRST', 'error');
-    await this.busy(null, 'SAVING THE SCENE...', async () => {
-      const painted = this.mask.flat().filter((v) => v > 0).length;
-      const shapeCount = this.shapes.length;
-      const name = this.sceneNameInput?.value.trim() || scene.name;
-      const saved = await api.updateAsset<Scene>(scene.id, {
-        ...scene,
-        name,
-        shapes: this.shapes,
-        mask: {
-          cellSize: this.maskCell,
-          width: this.mask[0]?.length ?? 0,
-          height: this.mask.length,
-          data: this.mask,
-        },
-      });
-      this.activeScene = saved;
-      clearDraft(`world:scene:${saved.id}`);
-      this.draftDirty = false;
-      this.scenePanel?.refresh();
-      await collection.refresh();
-      UISound.play('confirm');
-      HudShell.toast(
-        `SCENE SAVED · ${painted} MASK CELLS · ${shapeCount} SHAPE${shapeCount === 1 ? '' : 'S'}`,
-        'success',
-      );
-    });
   }
 
   /** Put a painted scene on the stage, fitted to the viewport. */
@@ -3059,14 +3015,15 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   private buildWorldPanel() {
-    const panel = HudShell.makePanel('02 · WORLD', 'right');
+    const panel = HudShell.makePanel('02 · LEVEL', 'right');
     this.worldPanel = panel;
 
     const newBtn = document.createElement('genvy-button') as GenvyButton;
-    newBtn.setAttribute('label', 'NEW BLANK WORLD');
+    newBtn.setAttribute('label', 'NEW BLANK GRID');
+    newBtn.dataset.tiles = '1';
     const saveBtn = document.createElement('genvy-button') as GenvyButton;
     saveBtn.setAttribute('variant', 'accent');
-    saveBtn.setAttribute('label', 'SAVE WORLD');
+    saveBtn.setAttribute('label', 'SAVE LEVEL');
     const statusHost = document.createElement('div');
 
     const dims = document.createElement('div');
@@ -3093,9 +3050,11 @@ export class WorldToolScene extends Phaser.Scene {
     });
     dims.append(field('W', this.widthIn), field('H', this.heightIn), field('CANVAS', growSel));
 
+    const dimsField = dims;
+    dimsField.dataset.tiles = '1';
     panel.append(
-      field('WORLD NAME', this.worldNameIn),
-      dims,
+      field('LEVEL NAME', this.levelNameIn),
+      dimsField,
       newBtn,
       saveBtn,
       statusHost,
@@ -3115,14 +3074,14 @@ export class WorldToolScene extends Phaser.Scene {
     });
 
     saveBtn.onClick(async () => {
-      if (!this.map || !this.tileset) return HudShell.toast('NOTHING TO SAVE YET', 'error');
-      await this.busy(statusHost, 'WRITING TO COLLECTION...', async () => {
-        const { created } = await this.saveWorld();
+      if (!this.map && !this.activeScene) return HudShell.toast('NOTHING TO SAVE YET', 'error');
+      await this.busy(statusHost, 'WRITING THE LEVEL TO THE COLLECTION...', async () => {
+        const { created } = await this.saveLevel();
         // Only a genuinely NEW asset deserves the loot celebration; an update
         // should feel like saving a file, not minting something.
         if (created) await HudShell.lootDrop();
         else await collection.refresh();
-        HudShell.toast(created ? 'WORLD SAVED TO INVENTORY' : 'WORLD UPDATED', 'success');
+        HudShell.toast(created ? 'LEVEL SAVED TO INVENTORY' : 'LEVEL UPDATED', 'success');
       });
     });
 
@@ -4209,76 +4168,98 @@ export class WorldToolScene extends Phaser.Scene {
     return rows;
   }
 
-  private async saveWorld(): Promise<{ created: boolean }> {
-    if (!this.map || !this.tileset) return { created: false };
-    const payload = {
-      name: this.worldNameIn.value.trim() || 'Unnamed World',
-      description: '',
-      tileset: { id: this.tileset.id, type: 'tileset' },
-      width: this.map.width,
-      height: this.map.height,
-      tileWidth: this.tileset.tileWidth,
-      tileHeight: this.tileset.tileHeight,
-      layers: this.layers.map((layer, i) => ({
-        name: i === 0 ? 'ground' : 'decor',
-        kind: 'tiles',
-        data: this.layerToData(layer),
-        visible: true,
-      })),
-      // Real spawns from the generated plan (room centres); the 2,2 default
-      // is only for a hand-painted map that never had a plan.
-      spawnPoints:
-        this.plannedSpawns.length > 0 ? this.plannedSpawns : [{ name: 'player', x: 2, y: 2 }],
-      props: this.props,
-      thumbnail: this.tileset.thumbnail,
-    };
-    /**
-     * Saving twice must not leave two worlds behind. `worldId` lives only in
-     * scene memory, so a hot reload or a trip back to the hub used to lose it
-     * and the next save minted a near-identical asset. When the id is gone,
-     * re-find the world by NAME + TILESET before creating anything.
-     */
-    let targetId = this.worldId;
-    if (!targetId) {
-      try {
-        const existing = await api.listAssets({ type: 'world' });
-        const match = existing.find(
-          (a) => a.name.trim().toLowerCase() === payload.name.trim().toLowerCase(),
-        );
-        if (match) {
-          const full = await api.getAsset<World>(match.id);
-          if (full.tileset?.id === this.tileset.id) targetId = match.id;
-        }
-      } catch {
-        // Listing failed — fall through and create, rather than lose the work.
+  /**
+   * Save the LEVEL: one asset owning the grid, the zones, the props and the
+   * spawns, referencing the backdrop scene and the tileset it is built from.
+   *
+   * There used to be two buttons writing two assets for one level, which was
+   * the clearest sign that "tilemap" and "painted" were never really separate
+   * things. The parts keep their own asset types — a scene is artwork that
+   * re-forges, a tileset is a palette other levels can share — and the level
+   * points at them.
+   */
+  private async saveLevel(): Promise<{ created: boolean }> {
+    const name = this.levelNameIn.value.trim() || 'Untitled Level';
+    // The backdrop's own edits (its name, its strip) belong to the scene
+    // asset; the zones painted over it belong to the level.
+    if (this.activeScene) {
+      const sceneName = this.sceneNameInput?.value.trim();
+      if (sceneName && sceneName !== this.activeScene.name) {
+        this.activeScene = await api.updateAsset<Scene>(this.activeScene.id, {
+          ...this.activeScene,
+          name: sceneName,
+        });
       }
     }
 
+    const payload: Record<string, unknown> = {
+      name,
+      description: '',
+      ...(this.activeScene ? { scene: { id: this.activeScene.id, type: 'scene' } } : {}),
+      ...(this.tileset ? { tileset: { id: this.tileset.id, type: 'tileset' } } : {}),
+      width: this.map?.width ?? 40,
+      height: this.map?.height ?? 23,
+      tileWidth: this.tileset?.tileWidth ?? 64,
+      tileHeight: this.tileset?.tileHeight ?? 64,
+      tiles: this.layers[0] ? this.layerToData(this.layers[0]) : [],
+      props: this.props,
+      shapes: this.shapes,
+      ...(this.mask.length > 0
+        ? {
+            mask: {
+              cellSize: this.maskCell,
+              width: this.mask[0]?.length ?? 0,
+              height: this.mask.length,
+              data: this.mask,
+            },
+          }
+        : {}),
+      spawnPoints: this.plannedSpawns,
+      thumbnail: this.activeScene?.thumbnail ?? this.tileset?.thumbnail,
+    };
+
+    /**
+     * Saving twice must not leave two levels behind. The id lives only in
+     * scene memory, so a reload or a trip to the hub loses it — re-find by
+     * NAME before creating anything.
+     */
+    let targetId = this.levelId;
+    if (!targetId) {
+      try {
+        const existing = await api.listAssets({ type: 'level' });
+        const match = existing.find(
+          (a) => a.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        );
+        if (match) targetId = match.id;
+      } catch {
+        // Listing failed — create rather than lose the work.
+      }
+    }
     if (targetId) {
       await api.updateAsset(targetId, payload);
-      this.worldId = targetId;
-      this.clearWorldDrafts();
+      this.levelId = targetId;
+      this.clearLevelDrafts();
       return { created: false };
     }
-    const saved = await api.createAsset<World>('world', payload);
-    this.worldId = saved.id;
-    this.clearWorldDrafts();
+    const saved = await api.createAsset<Level>('level', payload);
+    this.levelId = saved.id;
+    this.clearLevelDrafts();
     return { created: true };
   }
 
-  /** A saved world clears both its own draft and the unsaved-new one. */
-  private clearWorldDrafts() {
-    if (this.worldId) clearDraft(`world:world:${this.worldId}`);
+  /** A saved level clears every draft that was standing in for it. */
+  private clearLevelDrafts() {
+    if (this.levelId) clearDraft(`world:world:${this.levelId}`);
     if (this.tileset) clearDraft(`world:new:${this.tileset.id}`);
+    if (this.activeScene) clearDraft(`world:scene:${this.activeScene.id}`);
     this.draftDirty = false;
   }
 
   private async loadExisting(assetId: string, assetType: string) {
     try {
       if (assetType === 'scene') {
-        // A scene opens in its own mode — it has no tilemap to paint.
         const scene = await api.getAsset<Scene>(assetId);
-        this.setMode('scene');
+        this.layer = 'zones'; // a backdrop's own editable layer
         await this.displayScene(scene);
         HudShell.toast(`SCENE LOADED: ${scene.name.toUpperCase()}`);
       } else if (assetType === 'tileset') {
@@ -4287,19 +4268,50 @@ export class WorldToolScene extends Phaser.Scene {
         this.setStage('edit');
         HudShell.toast(`TILESET LOADED: ${ts.name.toUpperCase()}`);
       } else if (assetType === 'world') {
+        // Worlds predate the level asset: open the grid, and the next SAVE
+        // writes it as a level rather than stranding the work.
         const world = await api.getAsset<World>(assetId);
         const ts = await api.getAsset<Tileset>(world.tileset.id);
         await this.useTileset(ts);
-        this.worldId = world.id;
-        this.worldNameIn.value = world.name;
+        this.levelNameIn.value = world.name;
         this.widthIn.value = String(world.width);
         this.heightIn.value = String(world.height);
         const tileLayers = world.layers.filter((l) => l.kind === 'tiles');
         this.props = (world.props ?? []).map((pr) => ({ ...pr }));
+        this.plannedSpawns = world.spawnPoints ?? [];
         this.buildMap(world.width, world.height, tileLayers.map((l) => (l as { data: number[][] }).data));
         this.setStage('edit');
-        HudShell.toast(`WORLD LOADED: ${world.name.toUpperCase()}`);
+        HudShell.toast(`WORLD LOADED: ${world.name.toUpperCase()} — SAVES AS A LEVEL`);
         this.restoreWorldDraft();
+      } else if (assetType === 'level') {
+        const level = await api.getAsset<Level>(assetId);
+        this.levelId = level.id;
+        this.levelNameIn.value = level.name;
+        this.widthIn.value = String(level.width);
+        this.heightIn.value = String(level.height);
+        this.props = level.props.map((pr) => ({ ...pr }));
+        this.plannedSpawns = level.spawnPoints;
+        // The backdrop first: the mask is sized from whatever it spans.
+        if (level.scene) {
+          const scene = await api.getAsset<Scene>(level.scene.id);
+          await this.displayScene(scene);
+        }
+        if (level.tileset) {
+          const ts = await api.getAsset<Tileset>(level.tileset.id);
+          await this.useTileset(ts);
+          this.buildMap(level.width, level.height, level.tiles.length > 0 ? [level.tiles] : undefined);
+        }
+        // The level's OWN zones win over anything the scene carried.
+        if (level.mask) {
+          this.maskCell = level.mask.cellSize;
+          this.mask = level.mask.data.map((row) => [...row]);
+        }
+        this.shapes = level.shapes.map((sh) => ({ ...sh, points: sh.points.map((p) => ({ ...p })) }));
+        this.drawMask();
+        this.drawShapes();
+        this.layer = this.tilesActive ? 'tiles' : 'zones';
+        this.setStage('edit');
+        HudShell.toast(`LEVEL LOADED: ${level.name.toUpperCase()}`);
       }
     } catch {
       HudShell.toast('FAILED TO LOAD ASSET', 'error');

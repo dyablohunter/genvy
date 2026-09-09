@@ -9,7 +9,7 @@ export interface ToolDef {
 
 export const TOOLS: ToolDef[] = [
   { id: 'sprite', name: 'Sprite Forge', icon: '🧬', blurb: 'AI sprites & spritesheets', ready: true },
-  { id: 'world', name: 'World Maker', icon: '🗺️', blurb: 'Tilesets & level painting', ready: true },
+  { id: 'world', name: 'World Maker', icon: '🗺️', blurb: 'Level painting and tilesets', ready: true },
   { id: 'npc', name: 'NPC Designer', icon: '🧑‍🚀', blurb: 'Personalities, schedules, dialogue', ready: false },
   { id: 'enemy', name: 'Enemy Forge', icon: '👾', blurb: 'Behaviors, stats, drop tables', ready: false },
   { id: 'item', name: 'Item Smith', icon: '⚒️', blurb: 'Icons, effects, rarity', ready: false },

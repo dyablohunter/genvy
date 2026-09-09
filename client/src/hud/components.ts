@@ -90,6 +90,8 @@ function typeIcon(type: string): string {
     character: '🧑‍🚀',
     tileset: '🧱',
     world: '🗺️',
+    level: '🗺️',
+    scene: '🖼️',
   };
   return icons[type] ?? '📦';
 }
