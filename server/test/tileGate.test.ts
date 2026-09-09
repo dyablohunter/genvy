@@ -63,7 +63,11 @@ describe('gateTiles', () => {
   });
 
   it('flags a tile that will not repeat, and says why', async () => {
-    const report = await gateTiles([seamlessTile(), seamlessTile(92), seamedTile()]);
+    // Wrapping is only a FAULT for tiles the caller calls terrain — a sheet
+    // that never says which are terrain is not asked to tile at all.
+    const report = await gateTiles([seamlessTile(), seamlessTile(92), seamedTile()], {
+      seamlessIndexes: [0, 1, 2],
+    });
     expect(report.pass).toBe(false);
     expect(report.failedTiles).toContain(2);
     expect(report.tiles[2]!.errors.join(' ')).toMatch(/does not tile/);
@@ -117,5 +121,37 @@ describe('gateTiles', () => {
     expect(report.tileCount).toBe(2);
     expect(report.expectedTiles).toBe(6);
     expect(report.hints.join(' ')).toMatch(/2 tiles instead of 6/);
+  });
+});
+
+/**
+ * A sheet is mostly PROPS as often as not — a cactus, a chest, a skull. None
+ * of them repeat with themselves, and demanding that they do scored a
+ * perfectly good desert set at zero.
+ */
+describe('gateTiles without a terrain declaration', () => {
+  it('does not fault prop tiles for failing to tile', async () => {
+    const report = await gateTiles([seamedTile(), seamedTile(), seamedTile()]);
+    expect(report.failedTiles).toEqual([]);
+    expect(report.score).toBeGreaterThan(50);
+    // Still MEASURED and reported, just not held against the sheet.
+    expect(report.tiles[0]!.wrapScore).toBeLessThan(0.7);
+    expect(report.tiles[0]!.warnings.join(' ')).toMatch(/does not tile/);
+  });
+
+  it('still fails a sheet with real faults', async () => {
+    const empty = { data: Buffer.alloc(16 * 16 * 4), width: 16, height: 16 };
+    const report = await gateTiles([seamlessTile(), empty, empty]);
+    expect(report.failedTiles.length).toBeGreaterThan(0);
+    expect(report.pass).toBe(false);
+  });
+
+  it('keeps a few flagged cells from zeroing a large sheet', async () => {
+    const empty = { data: Buffer.alloc(16 * 16 * 4), width: 16, height: 16 };
+    const many = Array.from({ length: 24 }, (_, i) => (i < 3 ? empty : seamlessTile(90)));
+    const report = await gateTiles(many);
+    // Three bad cells out of 24 is a poor sheet, not a zero.
+    expect(report.score).toBeGreaterThan(0);
+    expect(report.failedTiles.length).toBe(3);
   });
 });

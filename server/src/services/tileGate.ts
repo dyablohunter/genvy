@@ -158,7 +158,15 @@ export async function gateTiles(
   opts: TileGateOptions = {},
 ): Promise<TileGateReport> {
   const expectedTiles = opts.expectedTiles ?? tiles.length;
-  const seamless = new Set(opts.seamlessIndexes ?? tiles.map((_, i) => i));
+  /**
+   * Only tiles the caller CALLS terrain are judged on wrapping. Defaulting to
+   * "all of them" made the gate demand that a cactus, a chest and a skull
+   * repeat seamlessly with themselves — which they must not — and a good
+   * sheet of mostly props scored zero. With no declaration, wrapping is
+   * measured and reported but never counted as a fault.
+   */
+  const seamless = new Set(opts.seamlessIndexes ?? []);
+  const seamJudged = seamless.size > 0;
   const stats = tiles.map(tileStats);
 
   // Set-wide colour centre, from the drawn tiles only.
@@ -179,10 +187,14 @@ export async function gateTiles(
     const warnings: string[] = [];
     const { mean, fill } = stats[index]!;
 
-    const wrapScore = seamless.has(index) ? wrapContinuity(tile) : 1;
-    if (seamless.has(index) && wrapScore < 0.45) {
-      errors.push('does not tile: a hard seam appears where the tile repeats');
-    } else if (seamless.has(index) && wrapScore < 0.7) {
+    // Measured for every tile — it is useful to know — but only a FAULT for
+    // one the caller declared as terrain.
+    const wrapScore = wrapContinuity(tile);
+    if (wrapScore < 0.45) {
+      const note = 'does not tile: a hard seam appears where the tile repeats';
+      if (seamless.has(index)) errors.push(note);
+      else warnings.push(note);
+    } else if (wrapScore < 0.7 && seamless.has(index)) {
       warnings.push('edges nearly line up but the repeat is still visible');
     }
 
@@ -217,8 +229,15 @@ export async function gateTiles(
   const faults = reports.reduce((n, r) => n + r.errors.length, 0);
   const missing = Math.max(0, expectedTiles - tiles.length);
 
-  let score = Math.round(seamAvg * 45 + paletteAvg * 35 + 20);
-  score -= faults * 6;
+  // Seam quality only carries weight when the caller said which tiles are
+  // terrain; otherwise palette cohesion and fill carry the sheet alone.
+  let score = seamJudged
+    ? Math.round(seamAvg * 45 + paletteAvg * 35 + 20)
+    : Math.round(paletteAvg * 70 + 30);
+  // Faults subtract, but a 24-tile sheet with a few flagged cells is not a
+  // zero: the penalty is capped so the score stays a measurement rather
+  // than a cliff.
+  score -= Math.min(40, faults * 6);
   score -= missing * 8;
   score = Math.max(0, Math.min(100, score));
 

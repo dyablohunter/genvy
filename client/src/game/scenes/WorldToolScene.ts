@@ -1106,18 +1106,24 @@ export class WorldToolScene extends Phaser.Scene {
     ] as const) {
       const btn = document.createElement('genvy-button') as GenvyButton;
       btn.setAttribute('label', label);
-      btn.style.flex = '1 1 33%';
+      btn.style.flex = '1 1 0';
+      btn.style.minWidth = '0';
       btn.title =
         id === 'backdrop'
           ? 'The painted artwork. Selected to work on it in step 1; strokes do not apply here.'
           : id === 'tiles'
             ? 'The tile grid.'
-            : 'Collision and gameplay zones over everything.';
+            : 'Collision and gameplay zones. Click again to hide them.';
       btn.onClick(() => {
         UISound.play('click');
-        this.setLayer(id);
+        // Pressing the layer you are already on toggles whether you can SEE
+        // it — the button that selects zones is the button that hides them,
+        // rather than a second button saying the same word.
+        if (id === 'zones' && this.layer === 'zones') this.setOverlayVisible(!this.maskVisible);
+        else this.setLayer(id);
       });
       this.layerButtons.set(id, btn);
+      if (id === 'zones') this.overlayBtn = btn;
       targetRow.appendChild(btn);
     }
 
@@ -1250,18 +1256,6 @@ export class WorldToolScene extends Phaser.Scene {
       }
     });
 
-    // Struck through when hidden. It belongs with the LAYER row, not with
-    // the tools: choosing a layer and seeing a layer are neighbours, and
-    // "OVERLAY" next to "ERASER" read like a third kind of brush.
-    const showBtn = document.createElement('genvy-button') as GenvyButton;
-    showBtn.setAttribute('label', 'SHOW ZONES');
-    showBtn.title = 'Show or hide the painted zones. Collision is unaffected.';
-    this.overlayBtn = showBtn;
-    showBtn.onClick(() => {
-      UISound.play('click');
-      this.setOverlayVisible(!this.maskVisible);
-    });
-
     const clearBtn = document.createElement('genvy-button') as GenvyButton;
     clearBtn.setAttribute('variant', 'danger');
     clearBtn.setAttribute('label', 'CLEAR ALL');
@@ -1324,7 +1318,6 @@ export class WorldToolScene extends Phaser.Scene {
 
     panel.append(
       targetRow,
-      showBtn,
       gridBlock,
       kindField,
       field('TOOL', penRow),
@@ -1338,7 +1331,7 @@ export class WorldToolScene extends Phaser.Scene {
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
     // painting experience is identical between the two crafts.
-    for (const el of [kindField, frictionField, cellField, showBtn, clearBtn]) {
+    for (const el of [kindField, frictionField, cellField, clearBtn]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
     targetRow.dataset.mixed = '1';
@@ -1552,6 +1545,9 @@ export class WorldToolScene extends Phaser.Scene {
       const present = id === 'backdrop' ? this.sceneActive : id === 'tiles' ? this.tilesActive : true;
       btn.style.display = present ? '' : 'none';
       btn.setAttribute('variant', id === this.layer ? 'accent' : '');
+      // Armed AND hidden are separate facts: the accent says where strokes
+      // land, the strike-through says whether you can see them land.
+      if (id === 'zones') btn.toggleAttribute('data-off', !this.maskVisible);
     }
   }
 
