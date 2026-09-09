@@ -153,7 +153,11 @@ export class WorldToolScene extends Phaser.Scene {
   private palettePanel: ReturnType<typeof HudShell.makePanel> | null = null;
   /** The picker half of it — hidden when there are no tiles to pick. */
   private paletteSection: HTMLElement | null = null;
-  private levelSaveBtn: GenvyButton | null = null;
+  /** The line under the name that reports what autosave has done. */
+  private levelSavedNote: HTMLElement | null = null;
+  /** Debounce for name-driven saves, and a guard against overlapping ones. */
+  private levelSaveTimer: number | null = null;
+  private levelSaving = false;
   /** Where SAVE reports progress, wherever the button happens to live. */
   private levelStatusHost: HTMLElement | null = null;
   private scenePanel: ReturnType<typeof buildScenePanel> | null = null;
@@ -333,7 +337,11 @@ export class WorldToolScene extends Phaser.Scene {
     // on the way out of the page. The library stays the truth — the draft is
     // only the bridge to the next SAVE.
     this.draftTimer = window.setInterval(() => {
-      if (this.draftDirty) this.writeDraft();
+      if (!this.draftDirty) return;
+      this.writeDraft();
+      // A named level files its work as it goes; an unnamed one keeps the
+      // local draft until it earns a name.
+      void this.autosaveLevel('work');
     }, 4000);
     this.draftFlusher = () => {
       if (this.draftDirty) this.writeDraft();
@@ -1009,7 +1017,9 @@ export class WorldToolScene extends Phaser.Scene {
     this.sceneSection = null;
     this.palettePanel = null;
     this.paletteSection = null;
-    this.levelSaveBtn = null;
+    this.levelSavedNote = null;
+    this.levelSaveTimer = null;
+    this.levelSaving = false;
     this.levelStatusHost = null;
     this.scenePanel = null;
     this.sceneImage = null;
@@ -1500,24 +1510,22 @@ export class WorldToolScene extends Phaser.Scene {
     hint.textContent = 'CLICK A TILE TO PAINT WITH IT. RIGHT-CLICK TOGGLES COLLISION (RED DOT).';
 
     this.paletteHost = document.createElement('div');
-    this.levelNameIn.addEventListener('input', () => (this.draftDirty = true));
+    this.levelNameIn.addEventListener('input', () => {
+      this.draftDirty = true;
+      this.scheduleLevelSave();
+    });
     // The picker and its instruction belong to tile modes only; the buttons
     // above them belong to every mode.
     this.paletteSection = document.createElement('div');
     this.paletteSection.className = 'g-field-stack';
     this.paletteSection.append(hint, this.paletteHost);
-    this.levelSaveBtn = document.createElement('genvy-button') as GenvyButton;
-    this.levelSaveBtn.setAttribute('variant', 'accent');
-    this.levelSaveBtn.setAttribute('label', 'SAVE LEVEL');
-    this.levelSaveBtn.onClick(() => void this.saveLevelFromUi());
+    const nameField = field('LEVEL NAME', this.levelNameIn);
+    const savedNote = document.createElement('div');
+    savedNote.className = 'g-hint';
+    savedNote.textContent = 'NAME IT (3+ CHARACTERS) AND IT SAVES ITSELF FROM THERE.';
+    this.levelSavedNote = savedNote;
 
-    panel.append(
-      field('LEVEL NAME', this.levelNameIn),
-      this.levelSaveBtn,
-      editBtn,
-      dummyBtn,
-      this.paletteSection,
-    );
+    panel.append(nameField, savedNote, editBtn, dummyBtn, this.paletteSection);
     return panel;
   }
 
@@ -4231,17 +4239,48 @@ export class WorldToolScene extends Phaser.Scene {
     return { created: true };
   }
 
-  /** The SAVE button's job, wherever that button is mounted. */
-  private async saveLevelFromUi() {
-    if (!this.map && !this.activeScene) return HudShell.toast('NOTHING TO SAVE YET', 'error');
-    await this.busy(this.levelStatusHost, 'WRITING THE LEVEL TO THE COLLECTION...', async () => {
+  /**
+   * Autosave, quietly. A named level is a real asset from the moment it has
+   * a name worth finding it under, and everything painted afterwards follows
+   * it — so there is no save button to forget, and no unsaved state to lose.
+   *
+   * Runs behind a debounce and a guard: a keystroke must not start a second
+   * write while the first is in flight, and neither must the paint tick.
+   */
+  private async autosaveLevel(reason: 'name' | 'work') {
+    const name = this.levelNameIn.value.trim();
+    if (name.length < 3) return; // nothing to file it under yet
+    if (!this.map && !this.activeScene) return; // nothing in it yet
+    if (this.levelSaving) return;
+    this.levelSaving = true;
+    try {
       const { created } = await this.saveLevel();
-      // Only a genuinely NEW asset deserves the loot celebration; an update
-      // should feel like saving a file, not minting something.
-      if (created) await HudShell.lootDrop();
-      else await collection.refresh();
-      HudShell.toast(created ? 'LEVEL SAVED TO INVENTORY' : 'LEVEL UPDATED', 'success');
-    });
+      if (created) {
+        await collection.refresh();
+        HudShell.toast(`LEVEL SAVED: ${name.toUpperCase()}`, 'success');
+      } else if (reason === 'name') {
+        await collection.refresh();
+      }
+      if (this.levelSavedNote) {
+        const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        this.levelSavedNote.textContent = `SAVED AUTOMATICALLY AT ${at}.`;
+      }
+    } catch {
+      if (this.levelSavedNote) {
+        this.levelSavedNote.textContent = 'AUTOSAVE FAILED — THE LOCAL DRAFT STILL HAS YOUR WORK.';
+      }
+    } finally {
+      this.levelSaving = false;
+    }
+  }
+
+  /** Coalesce keystrokes into one write. */
+  private scheduleLevelSave() {
+    if (this.levelSaveTimer !== null) window.clearTimeout(this.levelSaveTimer);
+    this.levelSaveTimer = window.setTimeout(() => {
+      this.levelSaveTimer = null;
+      void this.autosaveLevel('name');
+    }, 700);
   }
 
   /** A saved level clears every draft that was standing in for it. */
