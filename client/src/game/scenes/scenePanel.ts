@@ -5,6 +5,7 @@ import { api } from '../../api/client.js';
 import { collection } from '../../state/collection.js';
 import { ProviderControls } from '../../hud/providerControls.js';
 import { field, textArea, autoGrow, GenvyButton } from '../../hud/components.js';
+import { saveDraft, loadDraft, clearDraft } from '../../state/drafts.js';
 
 /**
  * Scene Forge — one painted level backdrop from one prompt.
@@ -161,7 +162,10 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
     const cost = controls.costPreview();
     const verb = open ? 'REPAINT' : 'PAINT THE SCENE';
     forgeBtn.setLabel(`${verb}${cost ? ` ${cost}` : ''}`);
-    if (open && !prompt.value.trim()) prompt.value = open.prompt;
+    if (open && !prompt.value.trim()) {
+      prompt.value = open.prompt;
+      autoGrow.refresh(prompt);
+    }
     for (const opt of Array.from(viewSel.options)) {
       if (open && opt.value === open.view) viewSel.value = open.view;
     }
@@ -188,6 +192,37 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
   rowLeft.append(viewField, loopField);
   const orientField = field('CANVAS', orientRow);
 
+  // Pre-forge text has no asset behind it: a refresh used to take the whole
+  // description with it. Draft on every keystroke, restore on entry, and
+  // clear once a painted scene owns the words on disk.
+  const saveSceneDraft = () => {
+    saveDraft('world:scene-concept', {
+      prompt: prompt.value,
+      view: viewSel.value,
+      loop: loopSel.value,
+      orientation,
+    });
+  };
+  prompt.addEventListener('input', saveSceneDraft);
+  for (const sel of [viewSel, loopSel]) sel.addEventListener('change', saveSceneDraft);
+
+  const restoreSceneDraft = () => {
+    const draft = loadDraft<{
+      prompt: string;
+      view: string;
+      loop: string;
+      orientation: ImageOrientation;
+    }>('world:scene-concept');
+    if (!draft?.data.prompt) return;
+    const d = draft.data;
+    prompt.value = d.prompt;
+    if (d.view) viewSel.value = d.view;
+    if (d.loop) loopSel.value = d.loop;
+    if (d.orientation) setOrientation(d.orientation);
+    autoGrow.refresh(prompt);
+    syncFraming();
+  };
+
   panel.append(
     field('DESCRIBE THE SCENE', prompt),
     rowLeft,
@@ -198,6 +233,7 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
   );
   setOrientation(VIEW_ORIENTATION[viewSel.value as SceneView]);
   refresh();
+  restoreSceneDraft();
 
   forgeBtn.onClick(async () => {
     if (!prompt.value.trim()) return HudShell.toast('DESCRIBE THE SCENE FIRST', 'error');
@@ -252,6 +288,7 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
         const saved = open
           ? await api.updateAsset<Scene>(open.id, { ...open, ...body, mask: undefined })
           : await api.createAsset<Scene>('scene', { id: img.assetId, ...body });
+        clearDraft('world:scene-concept');
         await hooks.display(saved);
         await collection.refresh();
         await HudShell.lootDrop();
