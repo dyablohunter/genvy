@@ -2768,10 +2768,10 @@ export class WorldToolScene extends Phaser.Scene {
     this.tilesetPanel = panel;
     const prompt = textArea('', 'e.g. overgrown alien jungle ruins');
     const genBtn = document.createElement('genvy-button') as GenvyButton;
-    genBtn.setAttribute('label', 'GENERATE CONCEPT');
+    genBtn.setAttribute('label', '1 · GENERATE CONCEPT');
     const forgeBtn = document.createElement('genvy-button') as GenvyButton;
     forgeBtn.setAttribute('variant', 'accent');
-    forgeBtn.setAttribute('label', 'FORGE TILESET');
+    forgeBtn.setAttribute('label', '2 · FORGE TILESET');
     forgeBtn.title =
       'Renders the 24-tile sheet from the concept above — just the PALETTE. The map stays yours ' +
       'to paint from scratch.';
@@ -2786,7 +2786,7 @@ export class WorldToolScene extends Phaser.Scene {
       candidates: false, // the sheet IS the set; candidates would mean 4 sheets
     });
     this.providerControls.onChange = () => {
-      forgeBtn.setLabel(`FORGE TILESET · ${this.providerControls?.costPreview() ?? ''}`);
+      forgeBtn.setLabel(`2 · FORGE TILESET · ${this.providerControls?.costPreview() ?? ''}`);
     };
 
     /**
@@ -2836,6 +2836,13 @@ export class WorldToolScene extends Phaser.Scene {
     }
     this.tileSizeSel = tileSizeSel;
 
+    // Write the words, then draw the sheet: one numbered pair on one line, so
+    // the order is visible rather than implied by vertical position.
+    const stepRow = document.createElement('div');
+    stepRow.className = 'g-row';
+    for (const b of [genBtn, forgeBtn]) b.style.flex = '1 1 50%';
+    stepRow.append(genBtn, forgeBtn);
+
     // Pre-forge text has no asset behind it: a closed tab used to take the
     // theme and the tile list with it. Draft on every keystroke, restore on
     // entry, clear when a tileset finally owns the words.
@@ -2866,9 +2873,8 @@ export class WorldToolScene extends Phaser.Scene {
       field('DESCRIBE THE WORLD THEME', prompt),
       field('TILE SIZE', tileSizeSel),
       ...this.providerControls.elements(),
-      genBtn,
+      stepRow,
       this.conceptFields,
-      forgeBtn,
       statusHost,
     );
 
