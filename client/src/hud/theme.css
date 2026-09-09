@@ -2224,7 +2224,9 @@ body.g-playtest .g-playtest-mask {
 .g-detail-preview img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  /* Fill the square: the preview is for recognising the asset, and letting
+     it letterbox wasted the width on empty ground. */
+  object-fit: cover;
   image-rendering: pixelated;
 }
 
