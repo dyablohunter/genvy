@@ -963,7 +963,13 @@ export class WorldToolScene extends Phaser.Scene {
   shutdown() {
     document.body.classList.remove('g-page-scroll');
     this.exitPlaytest();
-    if (this.draftDirty) this.writeDraft();
+    if (this.levelSaveTimer !== null) window.clearTimeout(this.levelSaveTimer);
+    this.levelSaveTimer = null;
+    if (this.draftDirty) {
+      this.writeDraft();
+      // Leaving the tool must not strand the last few seconds of work.
+      void this.autosaveLevel('work');
+    }
     if (this.draftTimer !== null) window.clearInterval(this.draftTimer);
     this.draftTimer = null;
     if (this.draftFlusher) {
