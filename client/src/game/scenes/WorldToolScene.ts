@@ -1250,9 +1250,12 @@ export class WorldToolScene extends Phaser.Scene {
       }
     });
 
-    // One word, two states: struck through when the overlay is hidden.
+    // Struck through when hidden. It belongs with the LAYER row, not with
+    // the tools: choosing a layer and seeing a layer are neighbours, and
+    // "OVERLAY" next to "ERASER" read like a third kind of brush.
     const showBtn = document.createElement('genvy-button') as GenvyButton;
-    showBtn.setAttribute('label', 'OVERLAY');
+    showBtn.setAttribute('label', 'SHOW ZONES');
+    showBtn.title = 'Show or hide the painted zones. Collision is unaffected.';
     this.overlayBtn = showBtn;
     showBtn.onClick(() => {
       UISound.play('click');
@@ -1278,10 +1281,8 @@ export class WorldToolScene extends Phaser.Scene {
 
     const toolRow = document.createElement('div');
     toolRow.className = 'g-row';
-    for (const b of [eraseBtn, showBtn]) {
-      b.style.flex = '1 1 50%';
-      toolRow.appendChild(b);
-    }
+    eraseBtn.style.flex = '1 1 100%';
+    toolRow.appendChild(eraseBtn);
 
 
     const backBtn = document.createElement('genvy-button') as GenvyButton;
@@ -1323,6 +1324,7 @@ export class WorldToolScene extends Phaser.Scene {
 
     panel.append(
       targetRow,
+      showBtn,
       gridBlock,
       kindField,
       field('TOOL', penRow),
@@ -1392,8 +1394,8 @@ export class WorldToolScene extends Phaser.Scene {
     // A word button, kept out of the glyph row so the grid stays even.
     const more = document.createElement('genvy-button') as GenvyButton;
     more.style.flexBasis = '100%';
-    more.setAttribute('label', this.showAllKinds ? `LAYERS FOR ${view.toUpperCase()}` : 'ALL LAYERS');
-    more.title = 'Show every layer, or only the ones this view usually needs';
+    more.setAttribute('label', this.showAllKinds ? 'FEWER ZONE TYPES' : 'MORE ZONE TYPES');
+    more.title = 'Offer every zone type, or only the ones this kind of level usually needs';
     more.onClick(() => {
       UISound.play('click');
       this.showAllKinds = !this.showAllKinds;
