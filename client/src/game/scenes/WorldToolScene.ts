@@ -158,6 +158,9 @@ export class WorldToolScene extends Phaser.Scene {
   /** Debounce for name-driven saves, and a guard against overlapping ones. */
   private levelSaveTimer: number | null = null;
   private levelSaving = false;
+  /** The icon already cut, and the artwork it was cut from. */
+  private levelThumbCache: string | undefined;
+  private levelThumbFor: string | null = null;
   /** Where SAVE reports progress, wherever the button happens to live. */
   private levelStatusHost: HTMLElement | null = null;
   /** The grid's own settings, mounted with the tools that use them. */
@@ -1024,6 +1027,8 @@ export class WorldToolScene extends Phaser.Scene {
     this.paletteSection = null;
     this.levelSaveTimer = null;
     this.levelSaving = false;
+    this.levelThumbCache = undefined;
+    this.levelThumbFor = null;
     this.levelStatusHost = null;
     this.gridSettings = null;
     this.gridNewBtn = null;
@@ -4200,7 +4205,7 @@ export class WorldToolScene extends Phaser.Scene {
           }
         : {}),
       spawnPoints: this.plannedSpawns,
-      thumbnail: this.activeScene?.thumbnail ?? this.tileset?.thumbnail,
+      thumbnail: await this.levelThumbnail(),
     };
 
     /**
@@ -4270,6 +4275,31 @@ export class WorldToolScene extends Phaser.Scene {
       this.levelSaveTimer = null;
       void this.autosaveLevel('name');
     }, 700);
+  }
+
+  /**
+   * A 64x64 icon for the level: its backdrop if it has one, else the
+   * tileset's first tile. Cut from art already on disk, so it costs nothing
+   * — and without it the inventory shows a placeholder glyph for every level.
+   */
+  private async levelThumbnail(): Promise<string | undefined> {
+    const scene = this.activeScene;
+    if (scene) {
+      if (this.levelThumbFor === scene.image.path) return this.levelThumbCache;
+      try {
+        const { thumbnail } = await api.makeThumbnail({
+          assetId: scene.id,
+          sourceFile: scene.image.path.split('/').pop() ?? 'raw.png',
+          size: 64,
+        });
+        this.levelThumbFor = scene.image.path;
+        this.levelThumbCache = thumbnail;
+        return thumbnail;
+      } catch {
+        // A missing icon is not worth failing a save over.
+      }
+    }
+    return this.tileset?.thumbnail;
   }
 
   /** A saved level clears every draft that was standing in for it. */

@@ -188,6 +188,9 @@ export const api = {
   composeSheet: (body: ComposeSheetRequest) =>
     request<ComposeSheetResponse>('POST', '/api/image/compose-sheet', body),
 
+  /** Make a small square icon from an asset's own image — free, no AI. */
+  makeThumbnail: (body: { assetId: string; sourceFile: string; size?: number }) =>
+    request<{ thumbnail: string }>('POST', '/api/image/thumbnail', body),
   /** Byte-faithful rectangle crop of a library image — free, no AI. */
   cropRect: (body: import('@genvy/shared').CropRectRequest) =>
     request<{ fileRef: import('@genvy/shared').FileRef }>('POST', '/api/image/crop-rect', body),

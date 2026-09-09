@@ -2199,25 +2199,33 @@ body.g-playtest .g-playtest-mask {
   text-shadow: 0 0 8px var(--hud-danger);
 }
 
-/* A tileset's thumbnail is the whole 4x6 sheet; at icon size that reads as a
-   mosaic of specks. Blow it up and crop to the first tile, which is what a
-   set is recognised by. */
-.g-char-icon img.g-icon-firsttile {
-  width: 400%;
-  height: 600%;
-  object-fit: fill;
-  object-position: top left;
-  transform-origin: top left;
-  position: absolute;
-  top: 0;
-  left: 0;
-  image-rendering: pixelated;
+/* The asset detail panel beside the inventory. */
+.g-detail-name {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--hud-line);
+  text-transform: uppercase;
 }
 
-/* The name of whichever asset's actions are open. */
-.g-card-title {
-  margin-top: 8px;
-  color: var(--hud-line);
+.g-detail-preview {
+  /* Square and full width: the artwork IS the identification, so it gets
+     the room. A fixed height left a gap beside anything not 4:3. */
+  aspect-ratio: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hud-line-dim);
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.g-detail-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
 }
 
 /* The inventory scrolls in ONE place: the panel body. The drawer scrolling

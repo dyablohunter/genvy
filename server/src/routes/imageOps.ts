@@ -51,6 +51,25 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
    * /api/image/crop: that one chroma-keys an opaque source on the way
    * through, which would mangle a painted panel.
    */
+  /**
+   * Make a 64x64 icon for an asset from one of its own images — free, no AI.
+   * Levels and scenes had no thumbnail at all, so the inventory showed them
+   * as a generic placeholder glyph; a level is recognised by its artwork.
+   */
+  app.post<{ Body: { assetId: string; sourceFile: string; size?: number } }>(
+    '/api/image/thumbnail',
+    async (req) => {
+      const b = req.body ?? ({} as { assetId: string; sourceFile: string });
+      if (!b.assetId || !b.sourceFile) {
+        throw new LibraryError(400, 'assetId and sourceFile required');
+      }
+      const png = await loadSource(b.assetId, b.sourceFile);
+      const size = Math.min(256, Math.max(16, Math.round(b.size ?? 64)));
+      const rel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png, size));
+      return { thumbnail: rel };
+    },
+  );
+
   app.post<{ Body: CropRectRequest }>('/api/image/crop-rect', async (req) => {
     const b = req.body ?? ({} as CropRectRequest);
     if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
@@ -491,7 +510,10 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     const packed = pipe.packCells(cells, Math.min(cells.length, b.cols));
     const png = await pipe.toPng(packed);
     const rel = await save(b.assetId, 'tileset.png', png);
-    const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
+    // The FIRST TILE is the icon: the whole sheet at 64px is an unreadable
+    // mosaic, and a set is recognised by its ground tile.
+    const first = cells[0] ? await pipe.toPng(cells[0]) : png;
+    const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(first, 64));
     /**
      * World Maker v2 §W1: score the cut set the way animations are scored —
      * seams, palette cohesion, fill, drawn grid lines, duplicates. Advisory

@@ -285,9 +285,21 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
           // one, so a re-paint drops it rather than leaving wrong collision.
           layers: open?.layers ?? [],
         };
+        let thumbnail: string | undefined;
+        try {
+          thumbnail = (
+            await api.makeThumbnail({
+              assetId: img.assetId,
+              sourceFile: img.fileRef.path.split('/').pop() ?? 'raw.png',
+              size: 64,
+            })
+          ).thumbnail;
+        } catch {
+          // An icon is a nicety; never fail a paid render over one.
+        }
         const saved = open
-          ? await api.updateAsset<Scene>(open.id, { ...open, ...body, mask: undefined })
-          : await api.createAsset<Scene>('scene', { id: img.assetId, ...body });
+          ? await api.updateAsset<Scene>(open.id, { ...open, ...body, thumbnail, mask: undefined })
+          : await api.createAsset<Scene>('scene', { id: img.assetId, ...body, thumbnail });
         clearDraft('world:scene-concept');
         await hooks.display(saved);
         await collection.refresh();

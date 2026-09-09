@@ -77,7 +77,6 @@ class HudShellImpl {
   private backBtn!: HTMLElement;
   private drawer: GenvyPanel | null = null;
   private drawerList: HTMLElement | null = null;
-  private actionTitle: HTMLElement | null = null;
   private keyHintTimer: ReturnType<typeof setTimeout> | null = null;
   onBackToHub: (() => void) | null = null;
   onOpenAsset: ((entry: AssetIndexEntry) => void) | null = null;
@@ -430,9 +429,6 @@ class HudShellImpl {
       if (entry.thumbnail) {
         const img = document.createElement('img');
         img.src = `/library/files/${entry.thumbnail}`;
-        // A tileset's thumbnail is the whole 4x6 sheet: at icon size that is
-        // a mosaic of unreadable specks, so show its FIRST tile instead.
-        if (entry.type === 'tileset') img.classList.add('g-icon-firsttile');
         icon.appendChild(img);
       } else {
         icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
@@ -707,14 +703,11 @@ class HudShellImpl {
   private toggleRecoveredActions(card: HTMLElement, id: string) {
     if (this.actionRowFor === id) {
       this.actionRow?.remove();
-      this.actionTitle?.remove();
       this.actionRow = null;
-      this.actionTitle = null;
       this.actionRowFor = null;
       return;
     }
     this.actionRow?.remove();
-    this.actionTitle?.remove();
     const row = document.createElement('div');
     row.className = 'g-row g-card-actions';
 
@@ -750,19 +743,36 @@ class HudShellImpl {
   }
 
   /** Expand OPEN / RENAME / DELETE under the clicked card. */
+  /**
+   * Open an asset's detail beside the inventory, the way a character's does.
+   * The actions used to append a title and a row INTO the list, which piled
+   * up one stack of text per asset clicked and buried the grid.
+   */
   private toggleActions(card: HTMLElement, entry: AssetIndexEntry) {
-    // Icons live in a grid, so the row goes after the grid rather than
-    // between two cells — inserting it inline would reflow the whole grid.
     if (this.actionRowFor === entry.id) {
-      this.actionRow?.remove();
-      this.actionRow = null;
+      this.closeCharDetail();
       this.actionRowFor = null;
       return;
     }
-    this.actionRow?.remove();
+    this.closeCharDetail();
 
-    const row = document.createElement('div');
-    row.className = 'g-row g-card-actions';
+    const detail = this.makePanel(entry.type.toUpperCase(), 'right');
+    detail.id = 'genvy-char-detail';
+
+    const name = document.createElement('div');
+    name.className = 'g-detail-name';
+    name.textContent = entry.name;
+
+    const preview = document.createElement('div');
+    preview.className = 'g-detail-preview';
+    if (entry.thumbnail) {
+      const img = document.createElement('img');
+      img.src = `/library/files/${entry.thumbnail}`;
+      preview.appendChild(img);
+    } else {
+      preview.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
+    }
+
     const mk = (label: string, variant: string, fn: () => void) => {
       const b = document.createElement('genvy-button') as GenvyButton;
       b.setAttribute('label', label);
@@ -770,14 +780,12 @@ class HudShellImpl {
       b.onClick(fn);
       return b;
     };
-
-    row.appendChild(
-      mk('OPEN', '', () => {
-        this.hideDrawer();
-        this.onOpenAsset?.(entry);
-      }),
-    );
-    row.appendChild(mk('RENAME', '', () => this.startRename(card, entry)));
+    const open = mk('OPEN', 'accent', () => {
+      this.closeCharDetail();
+      this.hideDrawer();
+      this.onOpenAsset?.(entry);
+    });
+    const rename = mk('RENAME', '', () => this.startRename(card, entry));
     let armed = false;
     const del = mk('DELETE', 'danger', () => {
       if (!armed) {
@@ -794,25 +802,27 @@ class HudShellImpl {
         } catch (err) {
           this.toast(err instanceof ApiError ? err.message.toUpperCase() : 'DELETE FAILED', 'error');
         }
+        this.closeCharDetail();
         await collection.refresh();
       })();
     });
-    row.appendChild(del);
+    detail.append(name, preview, open, rename, del);
 
-    // Name the asset above its actions: the icon alone cannot say which one
-    // is open, and the card that used to carry the name is gone.
-    const title = document.createElement('div');
-    title.className = 'g-hint g-card-title';
-    title.textContent = `${entry.name.toUpperCase()} · ${entry.type.toUpperCase()}`;
-    // After the GRID, not between two cells: inserting inline would reflow
-    // every icon after it.
-    const anchor = card.parentElement?.classList.contains('g-char-grid')
-      ? card.parentElement
-      : card;
-    anchor.after(title, row);
-    this.actionTitle = title;
-    this.actionRow = row;
+    const rect = card.getBoundingClientRect();
+    detail.style.top = `${Math.min(rect.top, window.innerHeight - 320)}px`;
+    this.root.appendChild(detail);
+    this.charDetail = detail;
     this.actionRowFor = entry.id;
+    void slideIn(detail, 'right');
+
+    this.charDetailDismiss = (ev: PointerEvent) => {
+      if (detail.contains(ev.target as Node)) return;
+      this.closeCharDetail();
+      this.actionRowFor = null;
+    };
+    setTimeout(() => {
+      if (this.charDetailDismiss) window.addEventListener('pointerdown', this.charDetailDismiss);
+    }, 0);
   }
 
   private startRename(card: HTMLElement, entry: AssetIndexEntry) {
