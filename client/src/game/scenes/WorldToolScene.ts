@@ -105,6 +105,8 @@ export class WorldToolScene extends Phaser.Scene {
   private propImages: Phaser.GameObjects.Image[] = [];
   /** One prop per click — a drag must not smear a trail of them. */
   private propStamped = false;
+  /** One warning per session about painting zones onto nothing. */
+  private warnedNoZones = false;
   /** Wide brush behaviour in tile modes: repeat the tile, or stretch one. */
   private stretchTiles = false;
   private static readonly UNDO_LIMIT = 40;
@@ -1077,6 +1079,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.props = [];
     this.propImages = [];
     this.propStamped = false;
+    this.warnedNoZones = false;
     this.toolButtons = new Map();
   }
 
@@ -1545,6 +1548,10 @@ export class WorldToolScene extends Phaser.Scene {
     panel.querySelectorAll<HTMLElement>('[data-tiles]').forEach((el) => {
       el.style.display = this.tilesActive ? '' : 'none';
     });
+    // Never leave the tools aimed at a layer the level does not have: the
+    // row hides it, so the user cannot even see what they are painting into.
+    if (this.layer === 'tiles' && !this.tilesActive) this.layer = 'zones';
+    if (this.layer === 'zones' && this.mask.length === 0 && this.tilesActive) this.layer = 'tiles';
     for (const [id, btn] of this.layerButtons) {
       // Only layers this level HAS are offered, and the armed one is lit.
       const present = id === 'backdrop' ? this.sceneActive : id === 'tiles' ? this.tilesActive : true;
@@ -1631,8 +1638,11 @@ export class WorldToolScene extends Phaser.Scene {
       // backdrop — and harmless when there is no grid.
       img.setDepth(-5);
     }
-    this.maskGfx?.setVisible(showScene && this.maskVisible);
-    this.shapeGfx?.setVisible(showScene && this.maskVisible);
+    // Zones belong to the LEVEL, not to the backdrop: a pure tilemap paints
+    // them too, so they show wherever the editor is showing anything.
+    const showZones = !concept && (showScene || showTiles);
+    this.maskGfx?.setVisible(showZones && this.maskVisible);
+    this.shapeGfx?.setVisible(showZones && this.maskVisible);
 
     if (!this.sceneActive) {
       this.dummy?.destroy();
@@ -3078,10 +3088,24 @@ export class WorldToolScene extends Phaser.Scene {
       this.plannedSpawns = [];
       this.undoStack = [];
       this.buildMap(Number(this.widthIn.value) || 40, Number(this.heightIn.value) || 23);
+      // Aim at what was just created. The tools stay where they were
+      // otherwise, and on a level with no backdrop that means aimed at zones
+      // that do not exist — every stroke silently doing nothing.
+      this.layer = 'tiles';
+      // A grid can carry zones too: size the mask to it, so collision is
+      // paintable on a level that has no backdrop at all.
+      if (this.mask.length === 0) {
+        const b = this.levelBounds();
+        this.maskCell = 16;
+        this.mask = Array.from({ length: Math.ceil(b.height / this.maskCell) }, () =>
+          Array.from({ length: Math.ceil(b.width / this.maskCell) }, () => 0),
+        );
+        this.drawMask();
+      }
       // Layers built after the stage was last resolved come up hidden unless
       // the stage is re-asserted — which looked exactly like "nothing happens".
       this.refreshStage();
-      HudShell.toast('BLANK WORLD READY — PAINT AWAY');
+      HudShell.toast('BLANK GRID READY — PAINT AWAY');
     });
   }
 
@@ -4057,6 +4081,15 @@ export class WorldToolScene extends Phaser.Scene {
     // Each mode paints its own thing: tiles into a tilemap, or gameplay
     // zones over a painted scene.
     if (this.paintingZones) {
+      if (this.mask.length === 0) {
+        // Zones are painted over a backdrop or a grid; with neither there is
+        // nothing to hold them, and silence looked like a broken brush.
+        if (!this.warnedNoZones) {
+          this.warnedNoZones = true;
+          HudShell.toast('NOTHING TO PAINT ZONES ON YET — MAKE A GRID OR A BACKDROP', 'warn');
+        }
+        return;
+      }
       this.paintMask(pointer);
       return;
     }
