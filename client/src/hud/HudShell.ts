@@ -408,8 +408,11 @@ class HudShellImpl {
     this.closeCharDetail();
 
     // Characters render as a compact icon grid, filled asynchronously.
+    const spritesHeading = document.createElement('div');
+    spritesHeading.className = 'g-hint';
+    spritesHeading.textContent = 'SPRITES';
     const gridHost = document.createElement('div');
-    this.drawerList.appendChild(gridHost);
+    this.drawerList.append(spritesHeading, gridHost);
     void this.buildCharacterGrid(render, gridHost);
 
     const visible = entries.filter((e) => !DRAWER_HIDDEN_TYPES.has(e.type));
@@ -418,7 +421,17 @@ class HudShellImpl {
       divider.className = 'g-divider';
       const heading = document.createElement('div');
       heading.className = 'g-hint';
-      heading.textContent = 'OTHER ASSETS';
+      // Name what is actually there. "OTHER ASSETS" was a category for
+      // things we can list precisely.
+      const kinds = [...new Set(visible.map((e) => e.type))];
+      const LABELS: Record<string, string> = {
+        level: 'LEVELS',
+        world: 'LEVELS',
+        scene: 'BACKDROPS',
+        tileset: 'TILESETS',
+      };
+      const named = [...new Set(kinds.map((k) => LABELS[k] ?? `${k.toUpperCase()}S`))];
+      heading.textContent = named.join(' · ');
       this.drawerList.append(divider, heading);
     }
     // Same shape as the characters above: a grid of square icons, with the
