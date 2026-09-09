@@ -179,6 +179,8 @@ class HudShellImpl {
 
     collection.subscribe((entries) => {
       this.forgeCountEl.textContent = `ASSETS FORGED: ${logicalAssetCount(entries)}`;
+      // Assets changed, so the workspaces behind them may have too.
+      this.workspaceCache = null;
       this.renderDrawer(entries);
     });
   }
@@ -394,6 +396,8 @@ class HudShellImpl {
   private actionRowFor: string | null = null;
   /** Bumped on every drawer render so stale async appends can bail out. */
   private drawerRender = 0;
+  /** Workspaces as last fetched; dropped whenever the collection changes. */
+  private workspaceCache: import('@genvy/shared').WorkspaceInfo[] | null = null;
 
   private renderDrawer(entries: AssetIndexEntry[]) {
     if (!this.drawerList) return;
@@ -447,7 +451,11 @@ class HudShellImpl {
   private async buildCharacterGrid(render: number, host: HTMLElement) {
     let workspaces: import('@genvy/shared').WorkspaceInfo[] = [];
     try {
-      workspaces = await api.listWorkspaces();
+      // Cached between opens: the drawer re-renders on every collection
+      // change, and re-fetching the whole workspace list each time made
+      // opening the inventory feel slower than it is.
+      workspaces = this.workspaceCache ?? (await api.listWorkspaces());
+      this.workspaceCache = workspaces;
     } catch {
       return;
     }
@@ -490,7 +498,22 @@ class HudShellImpl {
       icon.title = kind ? `${name} · ${kind}` : name;
       if (lead) {
         const img = document.createElement('img');
-        img.src = `/library/files/${lead.id}/variant.png`;
+        // Icons are ~70px on screen; a variant.png is ~550KB, and 33 of them
+        // is 17MB fetched to draw postage stamps — which is why this grid
+        // lagged while the level list, which has real 64px thumbnails, was
+        // instant. Use the thumb when the workspace has one, and cut it in
+        // the background when it does not, so the next open is instant too.
+        const hasThumb = lead.files.includes('thumb.png');
+        img.src = `/library/files/${lead.id}/${hasThumb ? 'thumb.png' : 'variant.png'}`;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        if (!hasThumb) {
+          void api
+            .makeThumbnail({ assetId: lead.id, sourceFile: 'variant.png', size: 96 })
+            .catch(() => {
+              // No icon cut this time; the full image is already showing.
+            });
+        }
         icon.appendChild(img);
       } else {
         icon.innerHTML = '<div class="g-thumb-fallback">🛠️</div>';
