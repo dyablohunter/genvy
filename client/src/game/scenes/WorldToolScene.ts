@@ -9,7 +9,6 @@ import type {
 import {
   buildWorldGrid,
   SCENE_MASK_KINDS,
-  maskKindsForView,
   shapeOutline,
   pointInShape,
   fillMaskPolygon,
@@ -73,8 +72,12 @@ export class WorldToolScene extends Phaser.Scene {
   private worldId: string | null = null;
   /** The level this session is editing — the one thing SAVE writes. */
   private levelId: string | null = null;
-  /** The level's name, shared by both halves of the editor. */
-  private levelNameIn = textInput('New Level', '');
+  /**
+   * The level's name — EMPTY until the user types one. It is the trigger for
+   * autosave, so a pre-filled value would be a decision the user never made:
+   * "New Level" counted as a name and quietly created a level.
+   */
+  private levelNameIn = textInput('', 'NAME THIS LEVEL TO SAVE IT');
 
   private map: Phaser.Tilemaps.Tilemap | null = null;
   /** Faint tile grid drawn under the layers. */
@@ -229,8 +232,6 @@ export class WorldToolScene extends Phaser.Scene {
   private maskKindButtons = new Map<number, GenvyButton>();
   /** The PAINT AS row, rebuilt whenever the scene's view changes. */
   private kindRow: HTMLElement | null = null;
-  /** Whether the row shows every layer or just this view's. */
-  private showAllKinds = false;
   private onKindPicked: (() => void) | null = null;
   /** Friction stamped onto new shapes; null = the layer's own default. */
   private shapeFriction: number | null = null;
@@ -996,7 +997,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.concept = null;
     this.worldId = null;
     this.levelId = null;
-    this.levelNameIn = textInput('New Level', '');
+    this.levelNameIn = textInput('', 'NAME THIS LEVEL TO SAVE IT');
     this.map = null;
     this.gridGfx = null;
     this.layers = [];
@@ -1050,7 +1051,6 @@ export class WorldToolScene extends Phaser.Scene {
     this.overlayBtn = null;
     this.maskKindButtons = new Map();
     this.kindRow = null;
-    this.showAllKinds = false;
     this.onKindPicked = null;
     this.shapeFriction = null;
     this.brushSel = null;
@@ -1364,8 +1364,9 @@ export class WorldToolScene extends Phaser.Scene {
     // panel column, and each one's name is a tooltip and a toast away.
     row.className = 'g-icon-row';
     this.maskKindButtons.clear();
-    const view = this.activeScene?.view ?? 'side';
-    const kinds = this.showAllKinds ? [...SCENE_MASK_KINDS] : maskKindsForView(view);
+    // Every type, always: hiding the ones a view "usually" needs turned a
+    // one-click choice into a hunt for where the type went.
+    const kinds = [...SCENE_MASK_KINDS];
     // Keep the armed layer valid when the view narrows the list.
     if (!kinds.some((k) => k.id === this.maskKind)) this.maskKind = kinds[0]?.id ?? 1;
 
@@ -1391,17 +1392,6 @@ export class WorldToolScene extends Phaser.Scene {
       row.appendChild(btn);
     }
 
-    // A word button, kept out of the glyph row so the grid stays even.
-    const more = document.createElement('genvy-button') as GenvyButton;
-    more.style.flexBasis = '100%';
-    more.setAttribute('label', this.showAllKinds ? 'FEWER ZONE TYPES' : 'MORE ZONE TYPES');
-    more.title = 'Offer every zone type, or only the ones this kind of level usually needs';
-    more.onClick(() => {
-      UISound.play('click');
-      this.showAllKinds = !this.showAllKinds;
-      this.renderKindRow();
-    });
-    row.appendChild(more);
     this.maskKindButtons.get(this.maskKind)?.setAttribute('variant', 'accent');
   }
 
@@ -1575,7 +1565,12 @@ export class WorldToolScene extends Phaser.Scene {
       this.setStage('concept');
       return;
     }
-    this.refreshStage();
+    // Only what the LAYER changes: which rows the panel offers, and the
+    // cursor. Re-running the stage would hide and re-show every panel,
+    // entrance animations and all, for what is a one-word change.
+    this.refreshToolsPanel();
+    this.brushCursor?.clear();
+    this.restoreCursor();
   }
 
   private setStage(stage: 'concept' | 'edit') {
@@ -4180,7 +4175,8 @@ export class WorldToolScene extends Phaser.Scene {
    * points at them.
    */
   private async saveLevel(): Promise<{ created: boolean }> {
-    const name = this.levelNameIn.value.trim() || 'Untitled Level';
+    const name = this.levelNameIn.value.trim();
+    if (name.length < 3) throw new Error('a level needs a name before it can be saved');
     // The backdrop keeps the name it was painted with: it is a PART of this
     // level (like the tileset), and naming the parts separately was asking
     // the same question twice.
