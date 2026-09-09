@@ -2198,3 +2198,42 @@ body.g-playtest .g-playtest-mask {
   background: rgba(255, 61, 90, 0.12);
   text-shadow: 0 0 8px var(--hud-danger);
 }
+
+/* A tileset's thumbnail is the whole 4x6 sheet; at icon size that reads as a
+   mosaic of specks. Blow it up and crop to the first tile, which is what a
+   set is recognised by. */
+.g-char-icon img.g-icon-firsttile {
+  width: 400%;
+  height: 600%;
+  object-fit: fill;
+  object-position: top left;
+  transform-origin: top left;
+  position: absolute;
+  top: 0;
+  left: 0;
+  image-rendering: pixelated;
+}
+
+/* The name of whichever asset's actions are open. */
+.g-card-title {
+  margin-top: 8px;
+  color: var(--hud-line);
+}
+
+/* The inventory scrolls in ONE place: the panel body. The drawer scrolling
+   too gave two nested scrollers, which is why the list ended early and the
+   last rows were unreachable. */
+#collection-drawer {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#collection-drawer .gp-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  /* Room to scroll past the last row rather than ending flush against it. */
+  padding-bottom: 24px;
+}

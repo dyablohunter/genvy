@@ -83,7 +83,7 @@ export class GenvyAssetCard extends HTMLElement {
   }
 }
 
-function typeIcon(type: string): string {
+export function typeIcon(type: string): string {
   const icons: Record<string, string> = {
     spritesheet: '🧬',
     animation: '🎞️',

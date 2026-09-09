@@ -6,6 +6,7 @@ import {
   forgeStatus,
   progressBar,
   escapeHtml,
+  typeIcon,
 } from './components.js';
 import { slideIn, slideOut, glowPop } from './anim.js';
 import { UISound } from './UISound.js';
@@ -76,6 +77,7 @@ class HudShellImpl {
   private backBtn!: HTMLElement;
   private drawer: GenvyPanel | null = null;
   private drawerList: HTMLElement | null = null;
+  private actionTitle: HTMLElement | null = null;
   private keyHintTimer: ReturnType<typeof setTimeout> | null = null;
   onBackToHub: (() => void) | null = null;
   onOpenAsset: ((entry: AssetIndexEntry) => void) | null = null;
@@ -416,14 +418,33 @@ class HudShellImpl {
       heading.textContent = 'OTHER ASSETS';
       this.drawerList.append(divider, heading);
     }
-    for (const entry of visible.slice(0, 40)) {
-      const card = (document.createElement('genvy-asset-card') as GenvyAssetCard).render(entry);
-      card.addEventListener('click', () => {
+    // Same shape as the characters above: a grid of square icons, with the
+    // name and actions on click. A column of wide cards made five tilesets
+    // fill the drawer and pushed everything else out of reach.
+    const grid = document.createElement('div');
+    grid.className = 'g-char-grid';
+    for (const entry of visible.slice(0, 60)) {
+      const icon = document.createElement('div');
+      icon.className = 'g-char-icon';
+      icon.title = `${entry.name} · ${entry.type.toUpperCase()}`;
+      if (entry.thumbnail) {
+        const img = document.createElement('img');
+        img.src = `/library/files/${entry.thumbnail}`;
+        // A tileset's thumbnail is the whole 4x6 sheet: at icon size that is
+        // a mosaic of unreadable specks, so show its FIRST tile instead.
+        if (entry.type === 'tileset') img.classList.add('g-icon-firsttile');
+        icon.appendChild(img);
+      } else {
+        icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
+      }
+      icon.addEventListener('mouseenter', () => UISound.play('hover'));
+      icon.addEventListener('click', () => {
         UISound.play('click');
-        this.toggleActions(card, entry);
+        this.toggleActions(icon, entry);
       });
-      this.drawerList.appendChild(card);
+      grid.appendChild(icon);
     }
+    this.drawerList.appendChild(grid);
   }
 
   /** Characters as a 5-column icon grid; clicking one opens its detail panel. */
@@ -686,11 +707,14 @@ class HudShellImpl {
   private toggleRecoveredActions(card: HTMLElement, id: string) {
     if (this.actionRowFor === id) {
       this.actionRow?.remove();
+      this.actionTitle?.remove();
       this.actionRow = null;
+      this.actionTitle = null;
       this.actionRowFor = null;
       return;
     }
     this.actionRow?.remove();
+    this.actionTitle?.remove();
     const row = document.createElement('div');
     row.className = 'g-row g-card-actions';
 
@@ -721,13 +745,14 @@ class HudShellImpl {
       })();
     });
     row.append(resume, discard);
-    card.after(row);
     this.actionRow = row;
     this.actionRowFor = id;
   }
 
   /** Expand OPEN / RENAME / DELETE under the clicked card. */
   private toggleActions(card: HTMLElement, entry: AssetIndexEntry) {
+    // Icons live in a grid, so the row goes after the grid rather than
+    // between two cells — inserting it inline would reflow the whole grid.
     if (this.actionRowFor === entry.id) {
       this.actionRow?.remove();
       this.actionRow = null;
@@ -774,7 +799,18 @@ class HudShellImpl {
     });
     row.appendChild(del);
 
-    card.after(row);
+    // Name the asset above its actions: the icon alone cannot say which one
+    // is open, and the card that used to carry the name is gone.
+    const title = document.createElement('div');
+    title.className = 'g-hint g-card-title';
+    title.textContent = `${entry.name.toUpperCase()} · ${entry.type.toUpperCase()}`;
+    // After the GRID, not between two cells: inserting inline would reflow
+    // every icon after it.
+    const anchor = card.parentElement?.classList.contains('g-char-grid')
+      ? card.parentElement
+      : card;
+    anchor.after(title, row);
+    this.actionTitle = title;
     this.actionRow = row;
     this.actionRowFor = entry.id;
   }
