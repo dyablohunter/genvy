@@ -144,7 +144,6 @@ export class WorldToolScene extends Phaser.Scene {
     return this.layer === 'zones';
   }
   private tilesetPanel: ReturnType<typeof HudShell.makePanel> | null = null;
-  private worldPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   /** Step 1 as one centred panel, the way the sprite forge opens. */
   private conceptPanel: ReturnType<typeof HudShell.makePanel> | null = null;
   private tilesetSection: HTMLElement | null = null;
@@ -158,6 +157,9 @@ export class WorldToolScene extends Phaser.Scene {
   private levelSaving = false;
   /** Where SAVE reports progress, wherever the button happens to live. */
   private levelStatusHost: HTMLElement | null = null;
+  /** The grid's own settings, mounted with the tools that use them. */
+  private gridSettings: HTMLElement | null = null;
+  private gridNewBtn: GenvyButton | null = null;
   private scenePanel: ReturnType<typeof buildScenePanel> | null = null;
   private sceneImage: Phaser.GameObjects.Image | null = null;
   /** Every panel of the open strip, in travel order. */
@@ -323,7 +325,6 @@ export class WorldToolScene extends Phaser.Scene {
     void HudShell.setLayout([
       conceptPanel,
       this.buildPalettePanel(),
-      this.buildWorldPanel(),
       this.buildMaskPanel(),
     ]).then(() => {
       this.refreshStage();
@@ -1015,7 +1016,6 @@ export class WorldToolScene extends Phaser.Scene {
     this.layer = 'tiles';
     this.layerButtons = new Map();
     this.tilesetPanel = null;
-    this.worldPanel = null;
     this.conceptPanel = null;
     this.tilesetSection = null;
     this.sceneSection = null;
@@ -1024,6 +1024,8 @@ export class WorldToolScene extends Phaser.Scene {
     this.levelSaveTimer = null;
     this.levelSaving = false;
     this.levelStatusHost = null;
+    this.gridSettings = null;
+    this.gridNewBtn = null;
     this.scenePanel = null;
     this.sceneImage = null;
     this.sceneImages = [];
@@ -1090,7 +1092,7 @@ export class WorldToolScene extends Phaser.Scene {
    * backdrop is only a picture until something says which pixels are solid.
    */
   private buildMaskPanel() {
-    const panel = HudShell.makePanel('03 · PAINTING', 'right');
+    const panel = HudShell.makePanel('02 · PAINTING', 'right');
     this.maskPanel = panel;
 
     // The level's layer stack. Every stroke lands on exactly one of these,
@@ -1310,8 +1312,18 @@ export class WorldToolScene extends Phaser.Scene {
 
     const kindField = field('PAINT AS', kindRow);
     const cellField = field('MASK RESOLUTION', cellSel);
+    // Built by buildWorldPanel, which now exists only to assemble these.
+    this.buildWorldPanel();
+    const gridBlock = document.createElement('div');
+    gridBlock.className = 'g-field-stack';
+    gridBlock.dataset.tiles = '1';
+    if (this.gridSettings) gridBlock.append(this.gridSettings);
+    if (this.gridNewBtn) gridBlock.append(this.gridNewBtn);
+    if (this.levelStatusHost) gridBlock.append(this.levelStatusHost);
+
     panel.append(
       targetRow,
+      gridBlock,
       kindField,
       field('TOOL', penRow),
       frictionField,
@@ -1468,7 +1480,7 @@ export class WorldToolScene extends Phaser.Scene {
    * these two actions live in one predictable place.
    */
   private buildPalettePanel() {
-    const panel = HudShell.makePanel('01 · TILES', 'left');
+    const panel = HudShell.makePanel('01 · LEVEL', 'left');
     this.palettePanel = panel;
 
     const dummyBtn = document.createElement('genvy-button') as GenvyButton;
@@ -1533,10 +1545,6 @@ export class WorldToolScene extends Phaser.Scene {
    * work. Mixed mode adds the switch saying which of the two a stroke hits.
    */
   private refreshToolsPanel() {
-    // The level panel hides its grid-only rows the same way.
-    for (const el of this.worldPanel?.querySelectorAll<HTMLElement>('[data-tiles]') ?? []) {
-      el.style.display = this.tilesActive ? '' : 'none';
-    }
     const panel = this.maskPanel;
     if (!panel) return;
     // Zone sections follow the SCENE's existence, not the current target:
@@ -1579,7 +1587,7 @@ export class WorldToolScene extends Phaser.Scene {
    * a painted map or a loaded scene.
    */
   private refreshStage() {
-    for (const panel of [this.conceptPanel, this.worldPanel, this.maskPanel, this.palettePanel]) {
+    for (const panel of [this.conceptPanel, this.maskPanel, this.palettePanel]) {
       if (panel) HudShell.hidePanel(panel);
     }
 
@@ -1609,7 +1617,6 @@ export class WorldToolScene extends Phaser.Scene {
       if (this.paletteSection) {
         this.paletteSection.style.display = this.tilesActive ? '' : 'none';
       }
-      if (this.worldPanel) HudShell.showPanel(this.worldPanel, 'right');
       if (this.maskPanel) HudShell.showPanel(this.maskPanel, 'right');
       this.refreshToolsPanel();
     }
@@ -2773,7 +2780,7 @@ export class WorldToolScene extends Phaser.Scene {
   // ---------------- Panels ----------------
 
   private buildTilesetPanel() {
-    const panel = HudShell.makePanel('01 · TILESET', 'left');
+    const panel = HudShell.makePanel('TILESET', 'left');
     this.tilesetPanel = panel;
     const prompt = textArea('', 'e.g. overgrown alien jungle ruins');
     const genBtn = document.createElement('genvy-button') as GenvyButton;
@@ -3029,10 +3036,11 @@ export class WorldToolScene extends Phaser.Scene {
     return panel;
   }
 
+  /**
+   * Assemble the grid's controls. They used to be a panel of their own for
+   * two settings and a button; they belong beside the tools that use them.
+   */
   private buildWorldPanel() {
-    const panel = HudShell.makePanel('02 · LEVEL', 'right');
-    this.worldPanel = panel;
-
     const newBtn = document.createElement('genvy-button') as GenvyButton;
     newBtn.setAttribute('label', 'NEW BLANK GRID');
     newBtn.dataset.tiles = '1';
@@ -3062,10 +3070,8 @@ export class WorldToolScene extends Phaser.Scene {
       );
     });
     dims.append(field('W', this.widthIn), field('H', this.heightIn), field('CANVAS', growSel));
-
-    const dimsField = dims;
-    dimsField.dataset.tiles = '1';
-    panel.append(dimsField, newBtn, statusHost);
+    this.gridSettings = dims;
+    this.gridNewBtn = newBtn;
 
     newBtn.onClick(() => {
       if (!this.tileset) return HudShell.toast('FORGE OR LOAD A TILESET FIRST', 'error');
@@ -3079,10 +3085,6 @@ export class WorldToolScene extends Phaser.Scene {
       this.refreshStage();
       HudShell.toast('BLANK WORLD READY — PAINT AWAY');
     });
-
-
-
-    return panel;
   }
 
   /**
