@@ -153,8 +153,6 @@ export class WorldToolScene extends Phaser.Scene {
   private palettePanel: ReturnType<typeof HudShell.makePanel> | null = null;
   /** The picker half of it — hidden when there are no tiles to pick. */
   private paletteSection: HTMLElement | null = null;
-  /** The line under the name that reports what autosave has done. */
-  private levelSavedNote: HTMLElement | null = null;
   /** Debounce for name-driven saves, and a guard against overlapping ones. */
   private levelSaveTimer: number | null = null;
   private levelSaving = false;
@@ -1023,7 +1021,6 @@ export class WorldToolScene extends Phaser.Scene {
     this.sceneSection = null;
     this.palettePanel = null;
     this.paletteSection = null;
-    this.levelSavedNote = null;
     this.levelSaveTimer = null;
     this.levelSaving = false;
     this.levelStatusHost = null;
@@ -1525,13 +1522,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.paletteSection = document.createElement('div');
     this.paletteSection.className = 'g-field-stack';
     this.paletteSection.append(hint, this.paletteHost);
-    const nameField = field('LEVEL NAME', this.levelNameIn);
-    const savedNote = document.createElement('div');
-    savedNote.className = 'g-hint';
-    savedNote.textContent = 'NAME IT (3+ CHARACTERS) AND IT SAVES ITSELF FROM THERE.';
-    this.levelSavedNote = savedNote;
-
-    panel.append(nameField, savedNote, editBtn, dummyBtn, this.paletteSection);
+    panel.append(field('LEVEL NAME', this.levelNameIn), editBtn, dummyBtn, this.paletteSection);
     return panel;
   }
 
@@ -4267,14 +4258,10 @@ export class WorldToolScene extends Phaser.Scene {
       } else if (reason === 'name') {
         await collection.refresh();
       }
-      if (this.levelSavedNote) {
-        const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        this.levelSavedNote.textContent = `SAVED AUTOMATICALLY AT ${at}.`;
-      }
     } catch {
-      if (this.levelSavedNote) {
-        this.levelSavedNote.textContent = 'AUTOSAVE FAILED — THE LOCAL DRAFT STILL HAS YOUR WORK.';
-      }
+      // A failed autosave must not pass for a successful one; the local
+      // draft still holds the work either way.
+      HudShell.toast('AUTOSAVE FAILED — WORK IS STILL IN THE LOCAL DRAFT', 'warn');
     } finally {
       this.levelSaving = false;
     }
