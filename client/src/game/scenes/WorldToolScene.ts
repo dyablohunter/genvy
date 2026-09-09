@@ -153,6 +153,9 @@ export class WorldToolScene extends Phaser.Scene {
   private palettePanel: ReturnType<typeof HudShell.makePanel> | null = null;
   /** The picker half of it — hidden when there are no tiles to pick. */
   private paletteSection: HTMLElement | null = null;
+  private levelSaveBtn: GenvyButton | null = null;
+  /** Where SAVE reports progress, wherever the button happens to live. */
+  private levelStatusHost: HTMLElement | null = null;
   private scenePanel: ReturnType<typeof buildScenePanel> | null = null;
   private sceneImage: Phaser.GameObjects.Image | null = null;
   /** Every panel of the open strip, in travel order. */
@@ -1006,6 +1009,8 @@ export class WorldToolScene extends Phaser.Scene {
     this.sceneSection = null;
     this.palettePanel = null;
     this.paletteSection = null;
+    this.levelSaveBtn = null;
+    this.levelStatusHost = null;
     this.scenePanel = null;
     this.sceneImage = null;
     this.sceneImages = [];
@@ -1501,7 +1506,18 @@ export class WorldToolScene extends Phaser.Scene {
     this.paletteSection = document.createElement('div');
     this.paletteSection.className = 'g-field-stack';
     this.paletteSection.append(hint, this.paletteHost);
-    panel.append(field('LEVEL NAME', this.levelNameIn), editBtn, dummyBtn, this.paletteSection);
+    this.levelSaveBtn = document.createElement('genvy-button') as GenvyButton;
+    this.levelSaveBtn.setAttribute('variant', 'accent');
+    this.levelSaveBtn.setAttribute('label', 'SAVE LEVEL');
+    this.levelSaveBtn.onClick(() => void this.saveLevelFromUi());
+
+    panel.append(
+      field('LEVEL NAME', this.levelNameIn),
+      this.levelSaveBtn,
+      editBtn,
+      dummyBtn,
+      this.paletteSection,
+    );
     return panel;
   }
 
@@ -3015,10 +3031,8 @@ export class WorldToolScene extends Phaser.Scene {
     const newBtn = document.createElement('genvy-button') as GenvyButton;
     newBtn.setAttribute('label', 'NEW BLANK GRID');
     newBtn.dataset.tiles = '1';
-    const saveBtn = document.createElement('genvy-button') as GenvyButton;
-    saveBtn.setAttribute('variant', 'accent');
-    saveBtn.setAttribute('label', 'SAVE LEVEL');
     const statusHost = document.createElement('div');
+    this.levelStatusHost = statusHost;
 
     const dims = document.createElement('div');
     dims.className = 'g-row';
@@ -3046,7 +3060,7 @@ export class WorldToolScene extends Phaser.Scene {
 
     const dimsField = dims;
     dimsField.dataset.tiles = '1';
-    panel.append(dimsField, newBtn, saveBtn, statusHost);
+    panel.append(dimsField, newBtn, statusHost);
 
     newBtn.onClick(() => {
       if (!this.tileset) return HudShell.toast('FORGE OR LOAD A TILESET FIRST', 'error');
@@ -3061,17 +3075,7 @@ export class WorldToolScene extends Phaser.Scene {
       HudShell.toast('BLANK WORLD READY — PAINT AWAY');
     });
 
-    saveBtn.onClick(async () => {
-      if (!this.map && !this.activeScene) return HudShell.toast('NOTHING TO SAVE YET', 'error');
-      await this.busy(statusHost, 'WRITING THE LEVEL TO THE COLLECTION...', async () => {
-        const { created } = await this.saveLevel();
-        // Only a genuinely NEW asset deserves the loot celebration; an update
-        // should feel like saving a file, not minting something.
-        if (created) await HudShell.lootDrop();
-        else await collection.refresh();
-        HudShell.toast(created ? 'LEVEL SAVED TO INVENTORY' : 'LEVEL UPDATED', 'success');
-      });
-    });
+
 
     return panel;
   }
@@ -4225,6 +4229,19 @@ export class WorldToolScene extends Phaser.Scene {
     this.levelId = saved.id;
     this.clearLevelDrafts();
     return { created: true };
+  }
+
+  /** The SAVE button's job, wherever that button is mounted. */
+  private async saveLevelFromUi() {
+    if (!this.map && !this.activeScene) return HudShell.toast('NOTHING TO SAVE YET', 'error');
+    await this.busy(this.levelStatusHost, 'WRITING THE LEVEL TO THE COLLECTION...', async () => {
+      const { created } = await this.saveLevel();
+      // Only a genuinely NEW asset deserves the loot celebration; an update
+      // should feel like saving a file, not minting something.
+      if (created) await HudShell.lootDrop();
+      else await collection.refresh();
+      HudShell.toast(created ? 'LEVEL SAVED TO INVENTORY' : 'LEVEL UPDATED', 'success');
+    });
   }
 
   /** A saved level clears every draft that was standing in for it. */
