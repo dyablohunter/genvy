@@ -188,6 +188,9 @@ export const api = {
   composeSheet: (body: ComposeSheetRequest) =>
     request<ComposeSheetResponse>('POST', '/api/image/compose-sheet', body),
 
+  /** A detail-panel-sized preview of an asset, cut from its own art. Free. */
+  assetPreview: (id: string, size = 384) =>
+    request<{ preview: string }>('GET', `/api/asset-preview/${id}?size=${size}`),
   /** Make a small square icon from an asset's own image — free, no AI. */
   makeThumbnail: (body: {
     assetId: string;

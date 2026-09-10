@@ -816,8 +816,19 @@ class HudShellImpl {
     preview.className = 'g-detail-preview';
     if (entry.thumbnail) {
       const img = document.createElement('img');
+      // Show the 64px icon at once — it is already cached — then swap in a
+      // preview cut for THIS panel's width. The icon blown up to 300px is
+      // the blur; a 384px cut is sharp even on a HiDPI screen.
       img.src = `/library/files/${entry.thumbnail}`;
       preview.appendChild(img);
+      void api
+        .assetPreview(entry.id, 384)
+        .then(({ preview: file }) => {
+          if (this.actionRowFor === entry.id) img.src = `/library/files/${file}`;
+        })
+        .catch(() => {
+          // No bigger source than the icon; the icon is already showing.
+        });
     } else {
       preview.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
     }

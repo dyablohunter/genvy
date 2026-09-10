@@ -77,6 +77,57 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     },
   );
 
+  /**
+   * A preview of an asset at the size the inventory's detail panel actually
+   * shows — free, cut from art already on disk, and cached as `preview.png`.
+   *
+   * The 64px icon is right for a tile in a grid and wrong blown up to 300px,
+   * which is what the panel does with it. The server picks the source
+   * because only it knows an asset's shape: a scene shows its artwork, a
+   * tileset its sheet, a level its backdrop (falling back to the tileset).
+   */
+  app.get<{ Params: { id: string }; Querystring: { size?: string } }>(
+    '/api/asset-preview/:id',
+    async (req) => {
+      const size = Math.min(1024, Math.max(64, Number(req.query.size) || 384));
+      const seen = new Set<string>();
+      /** Walk to the first asset in the chain that owns an image. */
+      const sourceOf = async (
+        id: string,
+      ): Promise<{ assetId: string; file: string } | null> => {
+        if (seen.has(id)) return null; // a reference cycle must not hang the request
+        seen.add(id);
+        let asset: Record<string, unknown>;
+        try {
+          asset = await library.get(id);
+        } catch {
+          return null;
+        }
+        const image = asset.image as { path?: string } | undefined;
+        if (image?.path) {
+          const [assetId, file] = [image.path.split('/')[0], path.basename(image.path)];
+          if (assetId && file) return { assetId, file };
+        }
+        // A level owns no artwork of its own: it points at what it is built
+        // from, backdrop first because that is what a level looks like.
+        for (const key of ['scene', 'tileset'] as const) {
+          const ref = asset[key] as { id?: string } | undefined;
+          if (ref?.id) {
+            const found = await sourceOf(ref.id);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      const source = await sourceOf(req.params.id);
+      if (!source) throw new LibraryError(404, 'no image to preview');
+      const png = await loadSource(source.assetId, source.file);
+      const rel = await save(source.assetId, `preview-${size}.png`, await pipe.makeThumbnail(png, size));
+      return { preview: rel };
+    },
+  );
+
   app.post<{ Body: CropRectRequest }>('/api/image/crop-rect', async (req) => {
     const b = req.body ?? ({} as CropRectRequest);
     if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
