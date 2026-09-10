@@ -103,8 +103,8 @@ export class WorldToolScene extends Phaser.Scene {
   /** Stretched-tile props: one tile drawn over a block of cells. */
   private props: WorldProp[] = [];
   private propImages: Phaser.GameObjects.Image[] = [];
-  /** One prop per click — a drag must not smear a trail of them. */
-  private propStamped = false;
+  /** The stretched block last painted, so a drag lays a run, not a pile. */
+  private lastPropBlock: { x: number; y: number } | null = null;
   /** One warning per session about painting zones onto nothing. */
   private warnedNoZones = false;
   /** Wide brush behaviour in tile modes: repeat the tile, or stretch one. */
@@ -1078,7 +1078,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.undoStack = [];
     this.props = [];
     this.propImages = [];
-    this.propStamped = false;
+    this.lastPropBlock = null;
     this.warnedNoZones = false;
     this.toolButtons = new Map();
   }
@@ -3772,6 +3772,7 @@ export class WorldToolScene extends Phaser.Scene {
         else this.pushUndo();
         this.painting = true;
         this.lastMaskCell = null; // a new stroke starts fresh
+        this.lastPropBlock = null;
         this.strokeOrigin = this.maskCellAt(p);
         this.paintAt(p);
       }
@@ -3868,7 +3869,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.input.on('pointerup', () => {
       if (this.crop) this.crop.start = null;
       this.painting = false;
-      this.propStamped = false;
+      this.lastPropBlock = null;
       this.lastMaskCell = null;
       this.strokeOrigin = null;
       if (this.shapeDrag) {
@@ -4134,17 +4135,26 @@ export class WorldToolScene extends Phaser.Scene {
 
     if (this.tool === 'brush' && this.brushSize > 1 && this.stretchTiles) {
       // A wide brush paints ONE tile stretched over the block, not a grid of
-      // repeats — nine stamped rocks read as nine rocks. One per click.
-      if (this.propStamped) return;
-      this.propStamped = true;
-      this.props.push({
-        tile: this.selectedTile,
-        x: x0,
-        y: y0,
-        w: this.brushSize,
-        h: this.brushSize,
-      });
+      // repeats — nine stamped rocks read as nine rocks.
+      //
+      // Dragging lays a RUN of blocks, snapped to a lattice of the brush's
+      // own size so they butt up against each other instead of overlapping
+      // by a cell. One prop per block entered: without the lattice a drag
+      // dropped a fresh prop on every pointer move, and with a plain
+      // once-per-click guard it painted nothing until you released.
+      const size = this.brushSize;
+      const bx = Math.floor(x0 / size) * size;
+      const by = Math.floor(y0 / size) * size;
+      if (this.lastPropBlock?.x === bx && this.lastPropBlock?.y === by) return;
+      this.lastPropBlock = { x: bx, y: by };
+      // Re-entering a block replaces what is there rather than stacking a
+      // second prop underneath the first.
+      this.props = this.props.filter(
+        (pr) => !(pr.x === bx && pr.y === by && pr.w === size && pr.h === size),
+      );
+      this.props.push({ tile: this.selectedTile, x: bx, y: by, w: size, h: size });
       this.drawProps();
+      this.draftDirty = true;
       return;
     }
 
