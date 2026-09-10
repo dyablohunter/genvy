@@ -19,6 +19,9 @@ import { makeSeamlessTile } from '../services/seamless.js';
 import { applyStylePost } from '../services/stylePost.js';
 import { runAnchorGate } from '../services/anchorGate.js';
 
+/** Output filenames a caller may choose: a plain .png name, no paths. */
+const SAFE_OUT = /^[\w.-]+\.png$/;
+
 export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
   const loadSource = async (assetId: string, sourceFile: string) => {
     const abs = library.resolveFile(`${assetId}/${path.basename(sourceFile)}`);
@@ -56,7 +59,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
    * Levels and scenes had no thumbnail at all, so the inventory showed them
    * as a generic placeholder glyph; a level is recognised by its artwork.
    */
-  app.post<{ Body: { assetId: string; sourceFile: string; size?: number } }>(
+  app.post<{ Body: { assetId: string; sourceFile: string; size?: number; outName?: string } }>(
     '/api/image/thumbnail',
     async (req) => {
       const b = req.body ?? ({} as { assetId: string; sourceFile: string });
@@ -65,7 +68,11 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       }
       const png = await loadSource(b.assetId, b.sourceFile);
       const size = Math.min(256, Math.max(16, Math.round(b.size ?? 64)));
-      const rel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png, size));
+      // The caller names the file. `thumb.png` already means "thumbnail of
+      // the sheet" inside a sprite workspace, so writing there would replace
+      // one meaning with another — sprite icons ask for `icon.png` instead.
+      const outName = b.outName && SAFE_OUT.test(b.outName) ? b.outName : 'thumb.png';
+      const rel = await save(b.assetId, outName, await pipe.makeThumbnail(png, size));
       return { thumbnail: rel };
     },
   );
@@ -116,8 +123,6 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       thumbnail: thumbRel,
     };
   });
-
-  const SAFE_OUT = /^[\w.-]+\.png$/;
 
   /** Detect sprite bounding boxes only (no writes) — used for variant picking. */
   app.post<{ Body: { assetId: string; sourceFile: string; tolerance?: number } }>(

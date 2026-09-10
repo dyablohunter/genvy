@@ -189,7 +189,13 @@ export const api = {
     request<ComposeSheetResponse>('POST', '/api/image/compose-sheet', body),
 
   /** Make a small square icon from an asset's own image — free, no AI. */
-  makeThumbnail: (body: { assetId: string; sourceFile: string; size?: number }) =>
+  makeThumbnail: (body: {
+    assetId: string;
+    sourceFile: string;
+    size?: number;
+    /** Defaults to thumb.png; sprite workspaces already use that name. */
+    outName?: string;
+  }) =>
     request<{ thumbnail: string }>('POST', '/api/image/thumbnail', body),
   /** Byte-faithful rectangle crop of a library image — free, no AI. */
   cropRect: (body: import('@genvy/shared').CropRectRequest) =>

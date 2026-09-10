@@ -503,26 +503,39 @@ class HudShellImpl {
     grid.className = 'g-char-grid';
     for (const group of groups) {
       const slots = this.variantSlots(group.session, group.children);
-      const lead = slots.find((s) => s?.character) ?? slots.find((s) => s?.sheet) ?? slots.find(Boolean);
-      const name = lead?.character?.name?.replace(/\s+V\d+$/i, '') ?? 'UNSAVED';
+      // The ICON is the first version — V1, or the only one when a session
+      // produced a single anchor. Preferring "whichever slot has a saved
+      // character" put a later version's art on the tile, and the NAME is a
+      // separate question from the picture.
+      const face = slots.find(Boolean);
+      const named = slots.find((s) => s?.character) ?? face;
+      const name = named?.character?.name?.replace(/\s+V\d+$/i, '') ?? 'UNSAVED';
       const icon = document.createElement('div');
-      icon.className = `g-char-icon${lead?.character ? ' saved' : ''}`;
+      icon.className = `g-char-icon${named?.character ? ' saved' : ''}`;
       const kind = subjectLabel(group.session, group.children);
       icon.title = kind ? `${name} · ${kind}` : name;
-      if (lead) {
+      if (face) {
         const img = document.createElement('img');
         // Icons are ~70px on screen; a variant.png is ~550KB, and 33 of them
         // is 17MB fetched to draw postage stamps — which is why this grid
         // lagged while the level list, which has real 64px thumbnails, was
-        // instant. Use the thumb when the workspace has one, and cut it in
-        // the background when it does not, so the next open is instant too.
-        const hasThumb = lead.files.includes('thumb.png');
-        img.src = `/library/files/${lead.id}/${hasThumb ? 'thumb.png' : 'variant.png'}`;
+        // instant. So a small `icon.png` is cut once and reused.
+        //
+        // NOT `thumb.png`: in a workspace that has been through the sheet
+        // pipeline that name already holds a thumbnail of the SHEET, and
+        // using it put a strip of frames on the tile instead of a sprite.
+        const hasIcon = face.files.includes('icon.png');
+        img.src = `/library/files/${face.id}/${hasIcon ? 'icon.png' : 'variant.png'}`;
         img.loading = 'lazy';
         img.decoding = 'async';
-        if (!hasThumb) {
+        if (!hasIcon) {
           void api
-            .makeThumbnail({ assetId: lead.id, sourceFile: 'variant.png', size: 96 })
+            .makeThumbnail({
+              assetId: face.id,
+              sourceFile: 'variant.png',
+              size: 96,
+              outName: 'icon.png',
+            })
             .catch(() => {
               // No icon cut this time; the full image is already showing.
             });
