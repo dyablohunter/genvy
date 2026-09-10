@@ -1695,7 +1695,10 @@ genvy-asset-card .g-type {
   padding: 6px 4px;
 }
 
+/* Sized to whatever holds it: 100% of the panel body when renaming from the
+   detail card, 100% of the meta cell in a list row. */
 .g-rename {
+  box-sizing: border-box;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--hud-text);

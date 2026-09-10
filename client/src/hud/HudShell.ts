@@ -845,7 +845,7 @@ class HudShellImpl {
       this.hideDrawer();
       this.onOpenAsset?.(entry);
     });
-    const rename = mk('RENAME', '', () => this.startRename(card, entry));
+    const rename = mk('RENAME', '', () => this.startRename(name, entry));
     let armed = false;
     const del = mk('DELETE', 'danger', () => {
       if (!armed) {
@@ -885,9 +885,12 @@ class HudShellImpl {
     }, 0);
   }
 
-  private startRename(card: HTMLElement, entry: AssetIndexEntry) {
-    const nameEl = card.querySelector('.g-name');
-    if (!nameEl) return;
+  /**
+   * Turn a name element into an input, in place. The caller passes the
+   * element that shows the name — looking one up by class tied this to a
+   * card layout that no longer exists.
+   */
+  private startRename(nameEl: HTMLElement, entry: AssetIndexEntry) {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = entry.name;
@@ -911,9 +914,17 @@ class HudShellImpl {
           this.toast('RENAME FAILED', 'error');
         }
       }
+      // Put the heading back, showing whatever the name now is, so the
+      // panel does not sit there with a stray input in it.
+      const restored = nameEl.cloneNode(false) as HTMLElement;
+      restored.textContent = save && value ? value : entry.name;
+      input.replaceWith(restored);
       await collection.refresh();
     };
     input.addEventListener('keydown', (e) => {
+      // The drawer listens for keys too; a rename must not double as a
+      // shortcut while it is being typed.
+      e.stopPropagation();
       if (e.key === 'Enter') void commit(true);
       if (e.key === 'Escape') void commit(false);
     });
