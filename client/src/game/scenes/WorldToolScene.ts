@@ -216,6 +216,8 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private edgePointer: { x: number; y: number; overCanvas: boolean } | null = null;
   private edgePointerHandler: ((ev: MouseEvent) => void) | null = null;
+  /** Releases held gestures when the window loses focus. */
+  private blurHandler: (() => void) | null = null;
   /** Cropping one panel: which, the drag, and the overlay drawing it. */
   private crop: {
     index: number;
@@ -353,6 +355,19 @@ export class WorldToolScene extends Phaser.Scene {
     };
     window.addEventListener('beforeunload', this.draftFlusher);
     document.addEventListener('visibilitychange', this.draftFlusher);
+
+    this.blurHandler = () => {
+      // Forget the pointer entirely: on return, panning waits for a real
+      // mouse move rather than resuming from a stale edge reading.
+      this.edgePointer = null;
+      if (this.spacePanning) {
+        this.spacePanning = false;
+        this.lastMaskCell = null;
+        this.restoreCursor();
+      }
+      this.painting = false;
+    };
+    window.addEventListener('blur', this.blurHandler);
 
     this.edgePointerHandler = (ev: MouseEvent) => {
       this.edgePointer = {
@@ -854,6 +869,11 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private edgePan(deltaMs: number) {
     const p = this.edgePointer;
+    // An unfocused tab must not keep moving the level. The pointer's last
+    // known position is wherever it was when focus left — often pinned at an
+    // edge, which scrolled the map away for as long as the tab sat in the
+    // background.
+    if (!document.hasFocus() || document.hidden) return;
     // Only while painting ZONES over a backdrop. With a tile palette on
     // screen the pointer commutes constantly between map and palette, and
     // every trip across the canvas edge scooted the map out from under the
@@ -985,6 +1005,10 @@ export class WorldToolScene extends Phaser.Scene {
     if (this.edgePointerHandler) {
       window.removeEventListener('mousemove', this.edgePointerHandler);
       this.edgePointerHandler = null;
+    }
+    if (this.blurHandler) {
+      window.removeEventListener('blur', this.blurHandler);
+      this.blurHandler = null;
     }
     this.edgePointer = null;
     this.dummy?.destroy();
