@@ -87,7 +87,7 @@ Keeping this accurate and informative is an ongoing job, not a finished feature:
 
 ### Levels are layers, not types (World Maker)
 
-A **level** is whichever layers it happens to have — a painted backdrop, a tile grid, gameplay zones, or any combination — so the editor never asks "what type of level is this?". There are no tilemap/painted/mixed modes: step 1 offers both generators (forge a tileset, paint a backdrop), step 2 gives one toolset aimed at a layer (`BACKDROP · TILES · ZONES`), and layers the level does not have are simply not offered.
+A **level** is whichever layers it happens to have — a painted backdrop, a tile grid, gameplay zones, or any combination — so the editor never asks "what type of level is this?". There is no level TYPE at all, and nothing hybrid or mixed to choose: step 1 asks only what you are generating right now (**SCENE** or **TILESET**) and shows that generator's form; step 2 gives one toolset aimed at a layer (`BACKDROP · TILES · ZONES`), with layers the level does not have simply not offered. Coming back to step 1 to add the other layer is ordinary, not a mode switch.
 
 `level` (`shared/src/schemas/level.ts`) is the asset you save: it owns the grid, the zones, the props and the spawns, and REFERENCES the scene and tileset it is built from. Those keep their own types on purpose — a scene is artwork that re-forges, a tileset is a palette other levels share. Two save buttons writing two assets for one level was the clearest sign the modes were never real; there is one **SAVE LEVEL**. `world` assets still open (their grid becomes the level's) and save forward as levels.
 

@@ -128,6 +128,9 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private layer: LevelLayer = 'tiles';
   private layerButtons = new Map<LevelLayer, GenvyButton>();
+  /** Which generator step 1 is showing a form for. */
+  private generator: 'scene' | 'tileset' = 'scene';
+  private generatorButtons = new Map<'scene' | 'tileset', GenvyButton>();
   /**
    * Two steps, like the sprite forge: CONCEPT (choose the kind of level and
    * write/generate its texts) and EDIT (the tools). Forging moves forward;
@@ -325,7 +328,25 @@ export class WorldToolScene extends Phaser.Scene {
     };
     this.tilesetSection = sectionOf(tilesetPanel);
     this.sceneSection = sectionOf(scenePanel.panel);
-    conceptPanel.append(this.tilesetSection, this.sceneSection);
+
+    const pickRow = document.createElement('div');
+    pickRow.className = 'g-row';
+    for (const [id, label, hint] of [
+      ['scene', 'SCENE', 'Paint one backdrop image the camera pans across'],
+      ['tileset', 'TILESET', 'Forge a palette of tiles and paint a grid with them'],
+    ] as const) {
+      const btn = document.createElement('genvy-button') as GenvyButton;
+      btn.setAttribute('label', label);
+      btn.title = hint;
+      btn.style.flex = '1 1 50%';
+      btn.onClick(() => {
+        UISound.play('click');
+        this.setGenerator(id);
+      });
+      this.generatorButtons.set(id, btn);
+      pickRow.appendChild(btn);
+    }
+    conceptPanel.append(pickRow, this.tilesetSection, this.sceneSection);
 
     // Re-assert the current stage once the layout has actually mounted:
     // setLayout re-docks panels asynchronously, and whatever showPanel did
@@ -904,8 +925,9 @@ export class WorldToolScene extends Phaser.Scene {
     return this.worldId ? `world:world:${this.worldId}` : `world:new:${this.tileset.id}`;
   }
 
-  /** Park the unsaved layer of the current session in localStorage. Mixed
-   * mode has BOTH kinds of unsaved work, so both drafts are written. */
+  /** Park the unsaved layer of the current session in localStorage. A level
+   * with both a backdrop and a grid has two kinds of unsaved work, so both
+   * drafts are written. */
   private writeDraft() {
     if (this.sceneActive && this.activeScene) {
       saveDraft(`world:scene:${this.activeScene.id}`, {
@@ -1045,6 +1067,8 @@ export class WorldToolScene extends Phaser.Scene {
     this.stage = 'concept';
     this.layer = 'tiles';
     this.layerButtons = new Map();
+    this.generator = 'scene';
+    this.generatorButtons = new Map();
     this.tilesetPanel = null;
     this.conceptPanel = null;
     this.tilesetSection = null;
@@ -1366,7 +1390,6 @@ export class WorldToolScene extends Phaser.Scene {
     for (const el of [kindField, frictionField, cellField, clearBtn]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
-    targetRow.dataset.mixed = '1';
     this.refreshToolsPanel();
     return panel;
   }
@@ -1515,6 +1538,9 @@ export class WorldToolScene extends Phaser.Scene {
     editBtn.onClick(() => {
       const ts = this.tileset;
       UISound.play('click');
+      // Land on the generator behind the layer being worked on, so EDIT
+      // CONCEPT reopens the form that produced it.
+      this.generator = this.layer === 'tiles' && ts ? 'tileset' : 'scene';
       if (ts && this.conceptFields) {
         // Seed from the SAVED asset so edits apply to what is on disk.
         this.conceptNameIn.value = ts.name;
@@ -1546,8 +1572,8 @@ export class WorldToolScene extends Phaser.Scene {
       this.draftDirty = true;
       this.scheduleLevelSave();
     });
-    // The picker and its instruction belong to tile modes only; the buttons
-    // above them belong to every mode.
+    // The picker and its instruction need a grid; the buttons above them are
+    // about the level itself.
     this.paletteSection = document.createElement('div');
     this.paletteSection.className = 'g-field-stack';
     this.paletteSection.append(hint, this.paletteHost);
@@ -1556,16 +1582,17 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /**
-   * The painting panel serves BOTH crafts now: in tile modes it keeps only
-   * what paints tiles (tools, brush size, eraser); the zone-only sections —
-   * layers, friction, mask resolution, saving the scene — stay for painted
-   * work. Mixed mode adds the switch saying which of the two a stroke hits.
+   * The painting panel serves every layer: sections that only mean something
+   * for zones (paint-as, friction, mask resolution, clear) or only for a grid
+   * (size, new grid) hide themselves when the level has no such layer, and
+   * the layer row says where a stroke lands.
    */
   private refreshToolsPanel() {
     const panel = this.maskPanel;
     if (!panel) return;
-    // Zone sections follow the SCENE's existence, not the current target:
-    // in mixed mode both crafts are in play, so both toolsets stay to hand.
+    // Zone sections follow whether the level HAS zones, not which layer is
+    // armed: a level with both a backdrop and a grid keeps both toolsets to
+    // hand rather than swapping them under the cursor.
     panel.querySelectorAll<HTMLElement>('[data-zones]').forEach((el) => {
       el.style.display = this.sceneActive ? '' : 'none';
     });
@@ -1585,6 +1612,13 @@ export class WorldToolScene extends Phaser.Scene {
       // land, the strike-through says whether you can see them land.
       if (id === 'zones') btn.toggleAttribute('data-off', !this.maskVisible);
     }
+  }
+
+  /** Choose which generator step 1 offers: a backdrop, or a tile palette. */
+  private setGenerator(which: 'scene' | 'tileset') {
+    this.generator = which;
+    if (this.stage !== 'concept') this.setStage('concept');
+    else this.refreshStage();
   }
 
   /** Aim the tools at one layer of the level. */
@@ -1629,10 +1663,18 @@ export class WorldToolScene extends Phaser.Scene {
         HudShell.showPanel(this.conceptPanel, 'center');
         this.conceptPanel.style.width = 'min(720px, 90vw)';
       }
-      // Both generators stay offered: a level can gain a backdrop or a tile
-      // palette at any point, and hiding one would make that a mode again.
-      if (this.tilesetSection) this.tilesetSection.style.display = '';
-      if (this.sceneSection) this.sceneSection.style.display = '';
+      // One generator's form at a time — the choice is "what am I making
+      // right now", not "what kind of level is this": a level can come back
+      // here and gain the other layer whenever it needs one.
+      if (this.tilesetSection) {
+        this.tilesetSection.style.display = this.generator === 'tileset' ? '' : 'none';
+      }
+      if (this.sceneSection) {
+        this.sceneSection.style.display = this.generator === 'scene' ? '' : 'none';
+      }
+      for (const [id, btn] of this.generatorButtons) {
+        btn.setAttribute('variant', id === this.generator ? 'accent' : '');
+      }
     } else {
       if (this.palettePanel) {
         HudShell.showPanel(this.palettePanel, 'left');
@@ -1650,7 +1692,7 @@ export class WorldToolScene extends Phaser.Scene {
       this.refreshToolsPanel();
     }
 
-    // World objects. In mixed the backdrop sits BEHIND the tile layers.
+    // World objects. A backdrop always sits BEHIND the tile grid.
     const showTiles = this.tilesActive && !concept;
     const showScene = this.sceneActive && !concept;
     for (const layer of this.layers) layer.setVisible(showTiles);
