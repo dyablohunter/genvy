@@ -339,6 +339,10 @@ class HudShellImpl {
   }
 
   async clearLayout() {
+    // The detail card is mounted on the root, not in the layout, so a scene
+    // change left it behind — hanging over the next module.
+    this.closeCharDetail();
+    this.actionRowFor = null;
     const panels = this.layoutPanels;
     this.layoutPanels = [];
     await Promise.all(

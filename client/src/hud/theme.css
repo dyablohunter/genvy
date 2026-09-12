@@ -139,7 +139,7 @@ body.g-page-scroll .g-dock-left {
   bottom: auto;
 }
 
-body.g-page-scroll #hud-root > genvy-panel:not(#collection-drawer) {
+body.g-page-scroll #hud-root > genvy-panel:not(#collection-drawer):not(#genvy-char-detail) {
   position: relative !important;
   top: auto !important;
   left: auto !important;
