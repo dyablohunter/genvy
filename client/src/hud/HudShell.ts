@@ -179,8 +179,12 @@ class HudShellImpl {
 
     collection.subscribe((entries) => {
       this.forgeCountEl.textContent = `ASSETS FORGED: ${logicalAssetCount(entries)}`;
-      // Assets changed, so the workspaces behind them may have too.
-      this.workspaceCache = null;
+      // The workspaces behind these assets may have changed, but the render
+      // does not wait to find out: it draws from the cache and the refresh
+      // catches up. Nulling the cache here meant every render started cold,
+      // so the sprite grid paid for a round trip on every open while the
+      // level grid — which renders straight from this array — was instant.
+      this.workspaceStale = true;
       this.renderDrawer(entries);
     });
   }
@@ -400,8 +404,10 @@ class HudShellImpl {
   private actionRowFor: string | null = null;
   /** Bumped on every drawer render so stale async appends can bail out. */
   private drawerRender = 0;
-  /** Workspaces as last fetched; dropped whenever the collection changes. */
+  /** Workspaces as last fetched, reused across opens. */
   private workspaceCache: import('@genvy/shared').WorkspaceInfo[] | null = null;
+  /** Set when the collection changed: refresh in the background, not in line. */
+  private workspaceStale = true;
 
   private renderDrawer(entries: AssetIndexEntry[]) {
     if (!this.drawerList) return;
@@ -467,16 +473,21 @@ class HudShellImpl {
   /** Characters as a 5-column icon grid; clicking one opens its detail panel. */
   private async buildCharacterGrid(render: number, host: HTMLElement) {
     let workspaces: import('@genvy/shared').WorkspaceInfo[] = [];
-    try {
-      // Cached between opens: the drawer re-renders on every collection
-      // change, and re-fetching the whole workspace list each time made
-      // opening the inventory feel slower than it is.
-      workspaces = this.workspaceCache ?? (await api.listWorkspaces());
+    const cached = this.workspaceCache;
+    if (cached) {
+      // Draw immediately from what we already know, then reconcile.
+      workspaces = cached;
+      if (this.workspaceStale) void this.refreshWorkspaces();
+    } else {
+      try {
+        workspaces = await api.listWorkspaces();
+      } catch {
+        return;
+      }
       this.workspaceCache = workspaces;
-    } catch {
-      return;
+      this.workspaceStale = false;
+      if (render !== this.drawerRender) return;
     }
-    if (render !== this.drawerRender) return;
 
     const sessions = workspaces.filter((w) => w.files.includes('variants.png'));
     const groups: {
@@ -558,6 +569,31 @@ class HudShellImpl {
     }
     host.appendChild(grid);
   }
+
+  /**
+   * Re-fetch the workspace list off the critical path, and re-render only if
+   * it actually changed — a signature of ids and filenames, since a new icon
+   * or a new clip is exactly what would make the grid stale.
+   */
+  private async refreshWorkspaces() {
+    if (this.workspaceRefreshing) return;
+    this.workspaceRefreshing = true;
+    try {
+      const fresh = await api.listWorkspaces();
+      const sig = (ws: import('@genvy/shared').WorkspaceInfo[]) =>
+        ws.map((w) => `${w.id}:${w.files.length}`).join('|');
+      const changed = sig(fresh) !== sig(this.workspaceCache ?? []);
+      this.workspaceCache = fresh;
+      this.workspaceStale = false;
+      if (changed && this.drawer) this.renderDrawer(collection.entries);
+    } catch {
+      // Keep the cache: a stale grid beats an empty one.
+    } finally {
+      this.workspaceRefreshing = false;
+    }
+  }
+
+  private workspaceRefreshing = false;
 
   /** One workspace per variant slot: prefer saved, else the newest. */
   private variantSlots(
