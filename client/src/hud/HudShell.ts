@@ -873,8 +873,18 @@ class HudShellImpl {
     detail.append(name, preview, open, rename, del);
 
     const rect = card.getBoundingClientRect();
-    detail.style.top = `${Math.min(rect.top, window.innerHeight - 320)}px`;
     this.root.appendChild(detail);
+    // Place it AFTER mounting, against its real height. A guessed height
+    // (320px) was shorter than the card actually is, so clicking an icon low
+    // in the list pushed its bottom - the OPEN and DELETE buttons - off the
+    // screen. Clamped under the top bar and above the viewport floor; a card
+    // taller than the viewport starts at the top and scrolls its own body.
+    const margin = 12;
+    const top = Math.max(
+      52,
+      Math.min(rect.top, window.innerHeight - detail.offsetHeight - margin),
+    );
+    detail.style.top = `${top}px`;
     this.charDetail = detail;
     this.actionRowFor = entry.id;
     void slideIn(detail, 'right');

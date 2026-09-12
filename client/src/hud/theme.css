@@ -1623,6 +1623,17 @@ genvy-asset-card .g-type {
   background: var(--hud-bg-solid);
   border: 1px solid var(--hud-line);
   box-shadow: -6px 0 24px rgba(0, 0, 0, 0.5);
+  /* Never taller than the screen: a card whose body would overflow scrolls
+     its own body instead of hanging its buttons off the bottom edge. */
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+
+#genvy-char-detail .gp-body {
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
 }
 
 .g-session-header {
