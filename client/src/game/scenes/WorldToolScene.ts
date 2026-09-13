@@ -114,10 +114,15 @@ export class WorldToolScene extends Phaser.Scene {
   private warnedNoZones = false;
   /** Wide brush behaviour in tile modes: repeat the tile, or stretch one. */
   private stretchTiles = false;
-  /** A blob smaller than this is a dab, not a surface worth labelling. */
-  private static readonly LABEL_MIN_CELLS = 6;
-  /** At most this many readouts: past that they hide the artwork. */
-  private static readonly LABEL_MAX = 24;
+  /**
+   * How many readouts the mask may show at once. There is no MINIMUM region
+   * size: a single painted cell is a surface with a friction value like any
+   * other, and skipping it meant the one thing you just dabbed down was the
+   * one thing that would not tell you what it was. A brush stroke is one
+   * connected region, so this ceiling is only reached by a mask speckled
+   * with hundreds of separate marks — and then the largest win.
+   */
+  private static readonly LABEL_MAX = 120;
   private static readonly UNDO_LIMIT = 40;
   private conceptFields: HTMLElement | null = null;
   private editTextsBtn: GenvyButton | null = null;
@@ -2428,10 +2433,8 @@ export class WorldToolScene extends Phaser.Scene {
    *
    * Cells carry friction too (per kind, on the level), but a cell is one
    * number in a grid — there is nothing to hang a readout off. So the regions
-   * are found the same way a paint bucket finds them, and each gets one
-   * label at its centre of mass. Tiny dabs are skipped and the count is
-   * capped: a readout per blob is information, forty of them is a wall of
-   * text over the artwork.
+   * are found the same way a paint bucket finds them, and each gets one label
+   * at its centre of mass, down to a region of a single cell.
    */
   private maskRegions(): { kind: number; x: number; y: number; cells: number }[] {
     const rows = this.mask.length;
@@ -2474,7 +2477,6 @@ export class WorldToolScene extends Phaser.Scene {
             stack.push(i);
           }
         }
-        if (n < WorldToolScene.LABEL_MIN_CELLS) continue;
         found.push({
           kind,
           x: (sx / n + 0.5) * this.maskCell,
