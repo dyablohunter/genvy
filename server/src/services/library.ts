@@ -162,18 +162,39 @@ export class Library {
   }
 
   async referrers(id: string): Promise<AssetIndexEntry[]> {
+    return (await this.referrerMap()).get(id) ?? [];
+  }
+
+  /**
+   * Every reference in the collection, inverted: `id -> entries pointing at
+   * it`, from ONE parallel pass over the assets.
+   *
+   * Asking per id instead meant re-reading and re-validating the whole
+   * collection for each question, which is quadratic the moment a caller
+   * asks about many ids — `workspaces()` did exactly that and spent 370ms
+   * on 336 redundant reads, making the inventory's sprite grid feel slow
+   * next to the level grid, which needs no server call at all.
+   */
+  private async referrerMap(): Promise<Map<string, AssetIndexEntry[]>> {
     const entries = await this.readIndex();
-    const result: AssetIndexEntry[] = [];
-    for (const entry of entries) {
-      if (entry.id === id) continue;
-      try {
-        const asset = await this.get(entry.id);
-        if (Library.collectRefs(asset).some((r) => r.id === id)) result.push(entry);
-      } catch {
-        /* skip unreadable */
-      }
-    }
-    return result;
+    const map = new Map<string, AssetIndexEntry[]>();
+    await Promise.all(
+      entries.map(async (entry) => {
+        let asset: Record<string, unknown>;
+        try {
+          asset = await this.get(entry.id);
+        } catch {
+          return; // unreadable asset: it simply refers to nothing
+        }
+        for (const ref of Library.collectRefs(asset)) {
+          if (ref.id === entry.id) continue; // self-reference is not a referrer
+          const list = map.get(ref.id);
+          if (list) list.push(entry);
+          else map.set(ref.id, [entry]);
+        }
+      }),
+    );
+    return map;
   }
 
   async remove(id: string, opts: { force?: boolean; cascade?: boolean } = {}) {
@@ -297,45 +318,42 @@ export class Library {
     } catch {
       return [];
     }
-    const out = [];
-    for (const dir of dirs) {
+    // One pass for the whole collection, then one pass per directory — in
+    // parallel, since every directory is independent.
+    const refs = await this.referrerMap();
+    const read = async (dir: string) => {
       let files: string[];
       let stat;
       try {
         files = await fs.readdir(path.join(this.filesDir, dir));
-        if (files.length === 0) continue;
+        if (files.length === 0) return null;
         stat = await fs.stat(path.join(this.filesDir, dir));
       } catch {
-        continue;
+        return null;
       }
-      let source;
-      if (files.includes('source.json')) {
+      const json = async (name: string) => {
+        if (!files.includes(name)) return undefined;
         try {
-          source = JSON.parse(await fs.readFile(path.join(this.filesDir, dir, 'source.json'), 'utf8'));
+          return JSON.parse(await fs.readFile(path.join(this.filesDir, dir, name), 'utf8'));
         } catch {
-          /* corrupt marker */
+          return undefined; // corrupt marker: the workspace still exists
         }
-      }
+      };
+      const [source, concept] = await Promise.all([json('source.json'), json('concept.json')]);
       const sheet = byId.get(dir);
-      let character: AssetIndexEntry | undefined;
-      if (sheet) {
-        character = (await this.referrers(dir)).find((e) => e.type === 'character');
-      }
-      // What KIND of thing this sprite is (character/weapon/prop/...), so the
-      // inventory can label it without another fetch.
-      let subject: string | undefined;
-      if (files.includes('concept.json')) {
-        try {
-          const concept = JSON.parse(
-            await fs.readFile(path.join(this.filesDir, dir, 'concept.json'), 'utf8'),
-          );
-          if (typeof concept.subject === 'string') subject = concept.subject;
-        } catch {
-          /* corrupt concept — no label */
-        }
-      }
-      out.push({ id: dir, files, updatedAt: stat.mtime.toISOString(), source, sheet, character, subject });
-    }
+      return {
+        id: dir,
+        files,
+        updatedAt: stat.mtime.toISOString(),
+        source,
+        sheet,
+        character: sheet ? refs.get(dir)?.find((e) => e.type === 'character') : undefined,
+        // What KIND of thing this sprite is (character/weapon/prop/...), so
+        // the inventory can label it without another fetch.
+        subject: typeof concept?.subject === 'string' ? (concept.subject as string) : undefined,
+      };
+    };
+    const out = (await Promise.all(dirs.map(read))).filter((w) => w !== null);
     return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
