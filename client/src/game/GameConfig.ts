@@ -34,9 +34,24 @@ export function createGame(): Phaser.Game {
       height: start.height,
     },
     pixelArt: true,
-    // Pads are for the playtest dummy; the browser only exposes one after a
-    // button is pressed on it, so enabling this costs nothing until then.
-    input: { gamepad: true },
+    input: {
+      // Pads are for the playtest dummy; the browser only exposes one after a
+      // button is pressed on it, so enabling this costs nothing until then.
+      gamepad: true,
+      /**
+       * The HUD is a full-screen DOM overlay, and Phaser's window listeners
+       * process a mousedown *specifically because* its target is not the
+       * canvas (MouseManager.onMouseDownWindow) — so every click on a panel,
+       * an inventory item or a header button was ALSO fed to the game at the
+       * same screen position, hit-testing whatever sat underneath. Clicking
+       * in the inventory launched the hub tool behind it.
+       *
+       * Turning these off costs only POINTER_UP_OUTSIDE / POINTER_DOWN_OUTSIDE,
+       * which nothing here listens for. The canvas's own listeners are
+       * untouched, so the game still gets every click that is really on it.
+       */
+      windowEvents: false,
+    },
     scene: [BootScene, HubScene, SpriteToolScene, WorldToolScene],
   });
   // Scale.NONE means we own resizing: follow the HOST (which changes when a

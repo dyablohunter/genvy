@@ -223,6 +223,8 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private edgePointer: { x: number; y: number; overCanvas: boolean } | null = null;
   private edgePointerHandler: ((ev: MouseEvent) => void) | null = null;
+  /** Ends a pan whose button came up outside the canvas; see setupPanning. */
+  private releaseHandler: (() => void) | null = null;
   /** Releases held gestures when the window loses focus. */
   private blurHandler: (() => void) | null = null;
   /** Cropping one panel: which, the drag, and the overlay drawing it. */
@@ -1076,6 +1078,10 @@ export class WorldToolScene extends Phaser.Scene {
       window.removeEventListener('beforeunload', this.draftFlusher);
       document.removeEventListener('visibilitychange', this.draftFlusher);
       this.draftFlusher = null;
+    }
+    if (this.releaseHandler) {
+      window.removeEventListener('mouseup', this.releaseHandler);
+      this.releaseHandler = null;
     }
     if (this.edgePointerHandler) {
       window.removeEventListener('mousemove', this.edgePointerHandler);
@@ -3957,6 +3963,18 @@ export class WorldToolScene extends Phaser.Scene {
       dragStart = null;
       this.restoreCursor();
     });
+    /**
+     * Phaser's window listeners are off (they fed every HUD click to the
+     * game), so a release that lands on a panel instead of the canvas no
+     * longer reaches the scene — which would leave the grab cursor on and a
+     * stale drag origin behind. Catch that one case here, where it belongs.
+     */
+    this.releaseHandler = () => {
+      if (!dragStart) return;
+      dragStart = null;
+      this.restoreCursor();
+    };
+    window.addEventListener('mouseup', this.releaseHandler);
     this.input.on(
       'wheel',
       (_p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
