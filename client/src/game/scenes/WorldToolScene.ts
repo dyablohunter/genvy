@@ -4564,8 +4564,32 @@ export class WorldToolScene extends Phaser.Scene {
     if (created) await api.createAsset<Level>('level', { id, ...payload });
     else await api.updateAsset(id, payload);
     this.levelId = id;
+    // The level's PARTS are shown on its card, and a backdrop painted before
+    // icons existed has none — so it sat there as a placeholder glyph that no
+    // amount of renaming could fix. Give it one while we are saving anyway.
+    void this.backfillSceneIcon();
     this.clearLevelDrafts();
     return { created };
+  }
+
+  /**
+   * Cut an icon and a card preview for the open backdrop if it has neither.
+   * Free and deterministic — the render is already on disk — and it writes
+   * into the SCENE's own directory, so it is the scene's picture, not a copy
+   * of the level's.
+   */
+  private async backfillSceneIcon() {
+    const scene = this.activeScene;
+    if (!scene || scene.thumbnail) return;
+    const thumbnail = await this.sceneThumbnail(scene.id, scene.image.path);
+    if (!thumbnail) return;
+    try {
+      const saved = await api.updateAsset<Scene>(scene.id, { ...scene, thumbnail });
+      this.activeScene = saved;
+      await collection.refresh();
+    } catch {
+      // Cosmetic; the level itself is already saved.
+    }
   }
 
   /**

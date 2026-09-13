@@ -556,18 +556,7 @@ class HudShellImpl {
       const icon = document.createElement('div');
       icon.className = 'g-char-icon';
       icon.title = `${entry.name} · ${assetTypeLabel(entry.type)}`;
-      if (entry.thumbnail) {
-        const img = document.createElement('img');
-        // Versioned by the asset's own updatedAt: a re-paint rewrites
-        // thumb.png at the SAME path, and the browser happily served the
-        // picture the asset had when it was first saved.
-        img.src = `/library/files/${entry.thumbnail}?v=${entry.updatedAt}`;
-        img.loading = 'lazy';
-        img.decoding = 'async';
-        icon.appendChild(img);
-      } else {
-        icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
-      }
+      this.paintIcon(icon, entry);
       icon.addEventListener('mouseenter', () => UISound.play('hover'));
       icon.addEventListener('click', () => {
         UISound.play('click');
@@ -576,6 +565,36 @@ class HudShellImpl {
       grid.appendChild(icon);
     }
     shelf.appendChild(grid);
+  }
+
+  /**
+   * The square picture for one asset. An asset with no `thumbnail` is not a
+   * lost cause: /api/asset-preview cuts one from its own artwork (walking to
+   * a level's backdrop when the level owns no image), so ask for a 64px cut
+   * rather than settling for the placeholder glyph. Scenes painted before
+   * icons existed showed that glyph forever, and no amount of renaming
+   * changed it because renaming is not what was missing.
+   */
+  private paintIcon(icon: HTMLElement, entry: AssetIndexEntry) {
+    if (entry.thumbnail) {
+      const img = document.createElement('img');
+      img.src = `/library/files/${entry.thumbnail}?v=${entry.updatedAt}`;
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      icon.appendChild(img);
+      return;
+    }
+    icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
+    void api
+      .assetPreview(entry.id, 64)
+      .then(({ preview }) => {
+        const img = document.createElement('img');
+        img.src = `/library/files/${preview}?v=${entry.updatedAt}`;
+        icon.replaceChildren(img);
+      })
+      .catch(() => {
+        // Nothing to cut from: the glyph is the honest answer.
+      });
   }
 
   private emptyShelf(): HTMLElement {
@@ -996,13 +1015,7 @@ class HudShellImpl {
       const icon = document.createElement('div');
       icon.className = 'g-char-icon';
       icon.title = `OPEN ${part.name.toUpperCase()} · ${assetTypeLabel(part.type)}`;
-      if (part.thumbnail) {
-        const img = document.createElement('img');
-        img.src = `/library/files/${part.thumbnail}?v=${part.updatedAt}`;
-        icon.appendChild(img);
-      } else {
-        icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(part.type)}</div>`;
-      }
+      this.paintIcon(icon, part);
       icon.addEventListener('mouseenter', () => UISound.play('hover'));
       icon.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -1058,7 +1071,20 @@ class HudShellImpl {
           // No bigger source than the icon; the icon is already showing.
         });
     } else {
+      // No icon on disk, but the artwork may still be reachable — the same
+      // repair the shelf squares use.
       preview.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
+      void api
+        .assetPreview(entry.id, 384)
+        .then(({ preview: file }) => {
+          if (this.actionRowFor !== entry.id) return;
+          const img = document.createElement('img');
+          img.src = `/library/files/${file}?v=${entry.updatedAt}`;
+          preview.replaceChildren(img);
+        })
+        .catch(() => {
+          // Nothing to cut from; the glyph stands.
+        });
     }
 
     // What this asset is BUILT FROM, as squares under the preview — the way a
