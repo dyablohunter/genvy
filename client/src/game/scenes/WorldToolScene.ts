@@ -176,6 +176,13 @@ export class WorldToolScene extends Phaser.Scene {
   /** The grid's own settings, mounted with the tools that use them. */
   private gridSettings: HTMLElement | null = null;
   private gridNewBtn: GenvyButton | null = null;
+  /** BLANK GRID + CLEAR ALL, the row that starts a grid over. */
+  private gridActions: HTMLElement | null = null;
+  private clearBtn: GenvyButton | null = null;
+  /** The eraser, which rides with whichever layer is armed. */
+  private eraseBtn: GenvyButton | null = null;
+  /** The eraser's row while zones are armed, shared with CLEAR ALL. */
+  private toolRow: HTMLElement | null = null;
   private scenePanel: ReturnType<typeof buildScenePanel> | null = null;
   private sceneImage: Phaser.GameObjects.Image | null = null;
   /** Every panel of the open strip, in travel order. */
@@ -1153,6 +1160,10 @@ export class WorldToolScene extends Phaser.Scene {
     this.levelStatusHost = null;
     this.gridSettings = null;
     this.gridNewBtn = null;
+    this.gridActions = null;
+    this.clearBtn = null;
+    this.eraseBtn = null;
+    this.toolRow = null;
     this.scenePanel = null;
     this.sceneImage = null;
     this.sceneImages = [];
@@ -1393,22 +1404,12 @@ export class WorldToolScene extends Phaser.Scene {
     const clearBtn = document.createElement('genvy-button') as GenvyButton;
     clearBtn.setAttribute('variant', 'danger');
     clearBtn.setAttribute('label', 'CLEAR ALL');
+    // Only ever on screen with ZONES armed (refreshToolsPanel puts the eraser
+    // on the grid's line instead when tiles are), so it clears zones and
+    // nothing else — BLANK GRID is how a grid starts over.
     clearBtn.onClick(() => {
       UISound.play('click');
-      this.pushUndo();
       this.pushMaskUndo();
-      // Clears the layer the tools are AIMED at. It used to clear zones only
-      // and hide itself everywhere else, so a tile level had a row with just
-      // an eraser in it and no way to start the grid over.
-      if (this.layer === 'tiles') {
-        // -1 is the empty cell, which is what `fill` writes across the layer.
-        for (const layer of this.layers) layer.fill(-1);
-        this.props = [];
-        this.lastPropBlock = null;
-        this.drawProps();
-        this.draftDirty = true;
-        return HudShell.toast('TILES AND PROPS CLEARED');
-      }
       for (const row of this.mask) row.fill(0);
       this.shapes = [];
       this.endPenPath(true);
@@ -1422,9 +1423,13 @@ export class WorldToolScene extends Phaser.Scene {
 
     const toolRow = document.createElement('div');
     toolRow.className = 'g-row';
+    // The eraser stays a square wherever it goes; whatever shares its line
+    // takes the rest. refreshToolsPanel decides which line that is.
+    eraseBtn.style.flex = '0 0 auto';
     clearBtn.style.flex = '1 1 auto';
-    clearBtn.style.minWidth = '0';
-    toolRow.append(eraseBtn, clearBtn);
+    this.toolRow = toolRow;
+    this.clearBtn = clearBtn;
+    this.eraseBtn = eraseBtn;
 
 
     const backBtn = document.createElement('genvy-button') as GenvyButton;
@@ -1461,7 +1466,7 @@ export class WorldToolScene extends Phaser.Scene {
     gridBlock.className = 'g-field-stack';
     gridBlock.dataset.tiles = '1';
     if (this.gridSettings) gridBlock.append(this.gridSettings);
-    if (this.gridNewBtn) gridBlock.append(this.gridNewBtn);
+    if (this.gridActions) gridBlock.append(this.gridActions);
     if (this.levelStatusHost) gridBlock.append(this.levelStatusHost);
 
     panel.append(
@@ -1701,6 +1706,26 @@ export class WorldToolScene extends Phaser.Scene {
       // Armed AND hidden are separate facts: the accent says where strokes
       // land, the strike-through says whether you can see them land.
       if (id === 'zones') btn.toggleAttribute('data-off', !this.maskVisible);
+    }
+    /**
+     * Where the eraser and CLEAR ALL live follows the armed layer.
+     *
+     * TILES: the eraser goes on the grid's own line, left of BLANK GRID, and
+     * CLEAR ALL is not offered — emptying a grid you are painting is what
+     * BLANK GRID is for, and undo is a keystroke away.
+     * ZONES: the two sit together, since both take paint away.
+     */
+    const erase = this.eraseBtn;
+    const clear = this.clearBtn;
+    const grid = this.gridNewBtn;
+    if (erase && clear && grid && this.gridActions && this.toolRow) {
+      if (this.layer === 'tiles') {
+        this.gridActions.replaceChildren(erase, grid);
+        this.toolRow.replaceChildren();
+      } else {
+        this.gridActions.replaceChildren(grid);
+        this.toolRow.replaceChildren(erase, clear);
+      }
     }
   }
 
@@ -3275,7 +3300,7 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private buildWorldPanel() {
     const newBtn = document.createElement('genvy-button') as GenvyButton;
-    newBtn.setAttribute('label', 'NEW BLANK GRID');
+    newBtn.setAttribute('label', 'BLANK GRID');
     newBtn.dataset.tiles = '1';
     const statusHost = document.createElement('div');
     this.levelStatusHost = statusHost;
@@ -3302,9 +3327,23 @@ export class WorldToolScene extends Phaser.Scene {
         'success',
       );
     });
-    dims.append(field('W', this.widthIn), field('H', this.heightIn), field('CANVAS', growSel));
+    const wField = field('W', this.widthIn);
+    const hField = field('H', this.heightIn);
+    for (const f of [wField, hField]) f.classList.add('g-field-narrow');
+    dims.append(wField, hField, field('CANVAS', growSel));
     this.gridSettings = dims;
     this.gridNewBtn = newBtn;
+
+    /**
+     * BLANK GRID and CLEAR ALL share a line: both start the grid over, one
+     * from nothing and one by emptying what is there, so they belong side by
+     * side rather than one of them sitting down with the eraser.
+     */
+    const gridActions = document.createElement('div');
+    gridActions.className = 'g-row';
+    gridActions.dataset.tiles = '1';
+    gridActions.appendChild(newBtn);
+    this.gridActions = gridActions;
 
     newBtn.onClick(() => {
       if (!this.tileset) return HudShell.toast('FORGE OR LOAD A TILESET FIRST', 'error');

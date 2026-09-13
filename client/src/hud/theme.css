@@ -446,7 +446,26 @@ genvy-button[data-off] button {
 }
 
 .g-row > * {
-  flex: 1;
+  flex: 1 1 0;
+  /* A flex item defaults to `min-width: auto`, so it refuses to shrink below
+     its content — and a <select> claims the width of its WIDEST option. That
+     is what pushed the CANVAS field ("GROW AS I PAINT") out past the panel
+     while W and H each kept a full third of the row. */
+  min-width: 0;
+}
+
+/* Controls fill their column rather than demanding their content's width. */
+.g-field input[type='text'],
+.g-field input[type='number'],
+.g-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* A field holding two or three digits does not need a third of the row; give
+   the room to whatever shares the line with it. */
+.g-field-narrow {
+  flex: 0 0 62px;
 }
 
 /* ---------- Top bar ---------- */
