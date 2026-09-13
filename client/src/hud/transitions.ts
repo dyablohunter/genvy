@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { HudShell } from './HudShell.js';
 import { UISound } from './UISound.js';
 import type { AssetIndexEntry } from '@genvy/shared';
+import { assetTypeLabel } from './components.js';
 
 /**
  * ONE routing table for the whole app. Tool scenes used to each carry their
@@ -31,7 +32,7 @@ export function registerAssetOpenHandlers(scene: Phaser.Scene) {
     if (!sceneKey) {
       // Say so rather than swallowing the click: a dead click reads as a
       // broken app, and this is how unrouted types used to behave.
-      HudShell.toast(`NO TOOL OPENS A ${entry.type.toUpperCase()} YET`, 'warn');
+      HudShell.toast(`NO TOOL OPENS A ${assetTypeLabel(entry.type)} YET`, 'warn');
       return;
     }
     void goToScene(scene, sceneKey, { assetId: entry.id, assetType: entry.type });

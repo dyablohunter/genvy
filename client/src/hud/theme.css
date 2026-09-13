@@ -2348,6 +2348,18 @@ body.g-playtest .g-playtest-mask {
   overflow: hidden;
 }
 
+/* The preview is the OPEN affordance: it says so on hover rather than with
+   a button underneath repeating the word. */
+.g-detail-preview.g-detail-open {
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.g-detail-preview.g-detail-open:hover {
+  border-color: var(--hud-accent);
+  box-shadow: 0 0 14px rgba(255, 157, 29, 0.45);
+}
+
 .g-detail-preview img {
   width: 100%;
   height: 100%;

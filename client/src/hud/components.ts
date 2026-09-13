@@ -77,10 +77,31 @@ export class GenvyAssetCard extends HTMLElement {
     const thumb = entry.thumbnail
       ? `<img src="/library/files/${entry.thumbnail}" alt="" />`
       : `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
-    this.innerHTML = `${thumb}<div class="g-meta"><div class="g-name">${escapeHtml(entry.name)}</div><div class="g-type">${entry.type}</div></div>`;
+    this.innerHTML = `${thumb}<div class="g-meta"><div class="g-name">${escapeHtml(entry.name)}</div><div class="g-type">${assetTypeLabel(entry.type)}</div></div>`;
     this.addEventListener('mouseenter', () => UISound.play('hover'));
     return this;
   }
+}
+
+/**
+ * What an asset type is CALLED in the UI.
+ *
+ * A tileset and a scene are separate types on purpose — a palette other
+ * levels share, and artwork that re-forges — but both come out of World
+ * Maker in the course of building one level, and naming them "TILESET" and
+ * "SCENE" left two entries in the inventory that read as unrelated
+ * creations. Naming them after the level they belong to says what they are
+ * for without pretending they are the same thing.
+ */
+export function assetTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    tileset: 'LEVEL (TILESET)',
+    scene: 'LEVEL (SCENE)',
+    level: 'LEVEL',
+    // Pre-`level` grids open as levels and save forward as one.
+    world: 'LEVEL',
+  };
+  return labels[type] ?? type.toUpperCase();
 }
 
 export function typeIcon(type: string): string {

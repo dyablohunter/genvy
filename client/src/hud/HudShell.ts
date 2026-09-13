@@ -7,6 +7,7 @@ import {
   progressBar,
   escapeHtml,
   typeIcon,
+  assetTypeLabel,
 } from './components.js';
 import { slideIn, slideOut, glowPop } from './anim.js';
 import { UISound } from './UISound.js';
@@ -536,7 +537,7 @@ class HudShellImpl {
     for (const entry of visible.slice(0, 120)) {
       const icon = document.createElement('div');
       icon.className = 'g-char-icon';
-      icon.title = `${entry.name} · ${entry.type.toUpperCase()}`;
+      icon.title = `${entry.name} · ${assetTypeLabel(entry.type)}`;
       if (entry.thumbnail) {
         const img = document.createElement('img');
         // Versioned by the asset's own updatedAt: a re-paint rewrites
@@ -742,7 +743,7 @@ class HudShellImpl {
     // for the card's width, and the line carries on either side of it. Left
     // as a real 2px gap, the page behind showed through the seam.
     const band = this.drawer?.getBoundingClientRect();
-    const top = band ? band.bottom - 1 : rect.bottom + 2;
+    const top = band ? band.bottom - 2 : rect.bottom + 2;
     detail.style.left = `${Math.round(left)}px`;
     detail.style.right = 'auto';
     detail.style.top = `${Math.round(top)}px`;
@@ -953,7 +954,7 @@ class HudShellImpl {
     }
     this.closeCharDetail();
 
-    const detail = this.makePanel(entry.type.toUpperCase(), 'right');
+    const detail = this.makePanel(assetTypeLabel(entry.type), 'right');
     detail.id = 'genvy-char-detail';
 
     const name = document.createElement('div');
@@ -992,7 +993,14 @@ class HudShellImpl {
       b.onClick(fn);
       return b;
     };
-    const open = mk('OPEN', 'accent', () => {
+    // Opening is what clicking the artwork means — the preview IS the asset,
+    // so it carries the action and an OPEN button below it is a second way
+    // to say the same thing.
+    preview.classList.add('g-detail-open');
+    preview.title = `OPEN ${entry.name.toUpperCase()}`;
+    preview.addEventListener('mouseenter', () => UISound.play('hover'));
+    preview.addEventListener('click', () => {
+      UISound.play('click');
       this.closeCharDetail();
       this.hideDrawer();
       this.onOpenAsset?.(entry);
@@ -1018,11 +1026,11 @@ class HudShellImpl {
         await collection.refresh();
       })();
     });
-    detail.append(name, preview, open, rename, del);
+    detail.append(name, preview, rename, del);
 
     // Place it AFTER mounting, against its real width: the card hangs under
     // the item that opened it and is clamped to the viewport, so an item at
-    // either end of the shelf keeps its OPEN and DELETE buttons on screen.
+    // either end of the shelf keeps its buttons on screen.
     this.root.appendChild(detail);
     this.placeDetail(detail, card);
     this.charDetail = detail;
