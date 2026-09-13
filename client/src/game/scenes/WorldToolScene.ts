@@ -1469,8 +1469,13 @@ export class WorldToolScene extends Phaser.Scene {
     if (this.gridActions) gridBlock.append(this.gridActions);
     if (this.levelStatusHost) gridBlock.append(this.levelStatusHost);
 
+    // The eraser and CLEAR ALL sit directly under the layer row, so taking
+    // paint away is next to the button that says where paint lands. In tile
+    // mode the eraser moves onto the grid's own line just below this (see
+    // refreshToolsPanel), which is the same place on screen.
     panel.append(
       targetRow,
+      toolRow,
       gridBlock,
       kindField,
       field('TOOL', penRow),
@@ -1478,7 +1483,6 @@ export class WorldToolScene extends Phaser.Scene {
       field('BRUSH SIZE', brushSel),
       stampField,
       cellField,
-      toolRow,
     );
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
