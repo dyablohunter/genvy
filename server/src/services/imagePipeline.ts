@@ -130,6 +130,163 @@ export function cutCells(img: RawImage, p: GridParams): RawImage[] {
   return cells;
 }
 
+/**
+ * Where an AI-drawn tile sheet's cells ACTUALLY begin and end.
+ *
+ * The model is asked for a `cols`x`rows` grid and it draws that many cells —
+ * but it does not draw them on an even lattice. Measured sheets drift by
+ * 20-30px per row, and the drift accumulates downward, so cutting at
+ * `height / rows` bisects the artwork: row one is perfect and row six is two
+ * halves of its neighbours. That is the "tiles overlay other tiles" bug.
+ *
+ * The model does leave a clue: it separates cells with a flat gutter of one
+ * background colour. So keep the EXPECTED cell count — the tile names and
+ * collision flags index by position, and inventing a different count would
+ * misname every tile — and correct each line individually to the gutter the
+ * model drew near it. A full-bleed sheet (terrain touching edge to edge) has
+ * no gutter to find and keeps the even division, which is what it wants.
+ */
+export interface DetectedGrid {
+  /** Cut lines along x, including 0 and the width: `cols + 1` entries. */
+  xs: number[];
+  /** Cut lines along y, including 0 and the height: `rows + 1` entries. */
+  ys: number[];
+  /** How many lines the drawn gutters moved off the even division. */
+  corrected: number;
+}
+
+/** How far off the even lattice a line may be pulled, as a share of a cell. */
+const GRID_SNAP_WINDOW = 0.18;
+/** A gutter row/column is this fraction of pixels within tolerance of the gutter colour. */
+const GRID_GUTTER_SHARE = 0.9;
+/** Per-channel tolerance when matching the gutter colour (a gutter has grain). */
+const GRID_GUTTER_TOLERANCE = 26;
+
+function colorAt(img: RawImage, x: number, y: number): [number, number, number] {
+  const i = (y * img.width + x) * 4;
+  return [img.data[i]!, img.data[i + 1]!, img.data[i + 2]!];
+}
+
+/**
+ * The gutter's colour, sampled from the pixels lying ON the even lattice —
+ * which is where a gutter is, within the snap window. Sampling the image
+ * border instead picks up whatever the corner tiles happen to be.
+ */
+function gutterColor(img: RawImage, xs: number[], ys: number[]): [number, number, number] {
+  const counts = new Map<string, number>();
+  const bump = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= img.width || y >= img.height) return;
+    const [r, g, b] = colorAt(img, x, y);
+    // Quantise to 32 levels per channel: exact colours never repeat in
+    // rendered art, but a gutter's family of near-greys does.
+    const key = `${r >> 3},${g >> 3},${b >> 3}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  for (const y of ys) for (let d = -3; d <= 3; d++) for (let x = 0; x < img.width; x += 2) bump(x, y + d);
+  for (const x of xs) for (let d = -3; d <= 3; d++) for (let y = 0; y < img.height; y += 2) bump(x + d, y);
+  let best = '0,0,0';
+  let bestN = -1;
+  for (const [key, n] of counts) {
+    if (n > bestN) {
+      bestN = n;
+      best = key;
+    }
+  }
+  const [r, g, b] = best.split(',').map((v) => (Number(v) << 3) + 4);
+  return [r!, g!, b!];
+}
+
+/** Runs of consecutive rows (or columns) that are almost entirely gutter. */
+function gutterBands(
+  img: RawImage,
+  axis: 'x' | 'y',
+  gutter: [number, number, number],
+): { center: number; width: number }[] {
+  const along = axis === 'y' ? img.height : img.width;
+  const across = axis === 'y' ? img.width : img.height;
+  const bands: { center: number; width: number }[] = [];
+  let start = -1;
+  for (let a = 0; a <= along; a++) {
+    let hit = 0;
+    if (a < along) {
+      for (let b = 0; b < across; b++) {
+        const [r, g, bl] = axis === 'y' ? colorAt(img, b, a) : colorAt(img, a, b);
+        if (
+          Math.abs(r - gutter[0]) < GRID_GUTTER_TOLERANCE &&
+          Math.abs(g - gutter[1]) < GRID_GUTTER_TOLERANCE &&
+          Math.abs(bl - gutter[2]) < GRID_GUTTER_TOLERANCE
+        ) {
+          hit++;
+        }
+      }
+    }
+    if (a < along && hit / across >= GRID_GUTTER_SHARE) {
+      if (start < 0) start = a;
+    } else if (start >= 0) {
+      bands.push({ center: (start + a) / 2, width: a - start });
+      start = -1;
+    }
+  }
+  // Bands touching an edge are the sheet's own margin, not a cut line.
+  return bands.filter((b) => b.center > 1 && b.center < along - 1);
+}
+
+function snapLines(nominal: number[], bands: { center: number; width: number }[], cell: number) {
+  let corrected = 0;
+  const lines = nominal.map((p, i) => {
+    if (i === 0 || i === nominal.length - 1) return p;
+    const near = bands.filter((b) => Math.abs(b.center - p) <= cell * GRID_SNAP_WINDOW);
+    if (near.length === 0) return p;
+    // The widest gutter in the window is the cell break; a narrow flat run
+    // inside a tile's artwork is not.
+    const pick = near.reduce((a, b) => (b.width > a.width ? b : a));
+    if (Math.round(pick.center) !== Math.round(p)) corrected++;
+    return pick.center;
+  });
+  return { lines: lines.map((v) => Math.round(v)), corrected };
+}
+
+/**
+ * Find the real cut lines of a `cols`x`rows` tile sheet. Never changes the
+ * cell COUNT — only where the cuts fall.
+ */
+export function detectTileGrid(img: RawImage, cols: number, rows: number): DetectedGrid {
+  const nomX = Array.from({ length: cols + 1 }, (_, i) => (i * img.width) / cols);
+  const nomY = Array.from({ length: rows + 1 }, (_, i) => (i * img.height) / rows);
+  const gutter = gutterColor(
+    img,
+    nomX.slice(1, -1).map(Math.round),
+    nomY.slice(1, -1).map(Math.round),
+  );
+  const x = snapLines(nomX, gutterBands(img, 'x', gutter), img.width / cols);
+  const y = snapLines(nomY, gutterBands(img, 'y', gutter), img.height / rows);
+  return { xs: x.lines, ys: y.lines, corrected: x.corrected + y.corrected };
+}
+
+/**
+ * Cut cells at explicit boundaries. Unlike `cutCells` the cells may differ in
+ * size — a drifting sheet has no single cell size — so callers normalise them
+ * with `resizeCell` before packing.
+ */
+export function cutCellsAt(img: RawImage, xs: number[], ys: number[]): RawImage[] {
+  const cells: RawImage[] = [];
+  for (let row = 0; row + 1 < ys.length; row++) {
+    for (let col = 0; col + 1 < xs.length; col++) {
+      const sx = Math.max(0, xs[col]!);
+      const sy = Math.max(0, ys[row]!);
+      const cw = Math.max(1, Math.min(xs[col + 1]!, img.width) - sx);
+      const ch = Math.max(1, Math.min(ys[row + 1]!, img.height) - sy);
+      const cell = Buffer.alloc(cw * ch * 4);
+      for (let y = 0; y < ch; y++) {
+        const srcStart = ((sy + y) * img.width + sx) * 4;
+        img.data.copy(cell, y * cw * 4, srcStart, srcStart + cw * 4);
+      }
+      cells.push({ data: cell, width: cw, height: ch });
+    }
+  }
+  return cells;
+}
+
 export interface CellBox {
   x: number;
   y: number;

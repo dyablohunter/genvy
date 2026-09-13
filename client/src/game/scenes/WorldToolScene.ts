@@ -68,6 +68,8 @@ const SOLID_KIND = SCENE_MASK_KINDS.find((k) => k.key === 'solid')?.id ?? 1;
 export class WorldToolScene extends Phaser.Scene {
   private tileset: Tileset | null = null;
   private tilesetKey = '';
+  /** Cache buster shared by the Phaser texture and the palette's CSS background. */
+  private tilesetStamp = 0;
   private concept: TilesetConcept | null = null;
   private worldId: string | null = null;
   /** The level this session is editing — the one thing SAVE writes. */
@@ -1488,6 +1490,7 @@ export class WorldToolScene extends Phaser.Scene {
     await this.busy(null, `RE-CUTTING TILES AT ${size}PX (FREE)...`, async () => {
       const extract = await api.extractTiles({
         assetId: ts.id,
+        sourceAssetId: this.sourceDirOf(ts, source),
         sourceFile: source.split('/').pop() ?? 'raw.png',
         cols: GRID_COLS,
         rows: GRID_ROWS,
@@ -1501,12 +1504,10 @@ export class WorldToolScene extends Phaser.Scene {
         tileHeight: extract.tileHeight,
         thumbnail: extract.thumbnail,
       });
-      // The painting is in tile INDICES, which did not change — keep it and
-      // rebuild the map on the new grid.
-      const kept = this.layers.map((l) => this.layerToData(l));
+      // The painting is in tile INDICES, which did not change; useTileset
+      // rebuilds the grid on the new sheet and keeps it.
       this.tileset = saved;
       await this.useTileset(saved);
-      if (this.map) this.buildMap(this.map.width, this.map.height, kept);
       this.refreshStage();
       await collection.refresh();
       UISound.play('confirm');
@@ -3045,10 +3046,15 @@ export class WorldToolScene extends Phaser.Scene {
           prompt: `${this.concept!.imagePrompt}. Tiles in order: ${subjects}`,
           orientation: 'portrait',
           kind: 'tileset',
+          // Re-forging writes the new sheet into the OPEN asset's directory.
+          // Letting it land in a fresh folder left the asset pointing across
+          // directories, and every later free re-cut read the old sheet.
+          ...(reforgeId ? { assetId: reforgeId } : {}),
         });
         HudShell.setBusyLabel('CUTTING & PACKING THE TILES...');
         const extract = await api.extractTiles({
           assetId: img.assetId,
+          sourceAssetId: img.assetId,
           sourceFile: 'raw.png',
           cols: GRID_COLS,
           rows: GRID_ROWS,
@@ -3081,6 +3087,11 @@ export class WorldToolScene extends Phaser.Scene {
         // A tileset that looks fine but does not tile is the failure this
         // whole gate exists to stop being invisible.
         const gate = extract.gate;
+        if (extract.gridCorrected) {
+          console.log(
+            `[genvy] tile grid: ${extract.gridCorrected} cut line(s) snapped to the drawn gutters`,
+          );
+        }
         if (gate) {
           console.log(
             `[genvy] tileset gate: ${gate.score}/100`,
@@ -3190,6 +3201,7 @@ export class WorldToolScene extends Phaser.Scene {
       HudShell.setBusyLabel(`BUILDING A SEAMLESS TILE (FREE)...`);
       const res = await api.seamlessVariant({
         assetId: ts.id,
+        sourceAssetId: this.sourceDirOf(ts, ts.image),
         sourceFile: 'tileset.png',
         tileWidth: ts.tileWidth,
         tileHeight: ts.tileHeight,
@@ -3337,11 +3349,29 @@ export class WorldToolScene extends Phaser.Scene {
 
   // ---------------- Tileset handling ----------------
 
+  /**
+   * The directory a tileset's files live in. It is USUALLY the asset's own id,
+   * but a re-forge used to render into a fresh directory while keeping the
+   * asset — so the stored path is the only thing that knows where the sheet
+   * is. Reading `basename()` against the asset id instead silently loaded the
+   * PREVIOUS sheet and restored the old tiles.
+   */
+  private sourceDirOf(ts: Tileset, ref?: { path: string } | string): string {
+    const path = typeof ref === 'string' ? ref : ref?.path;
+    const dir = path?.includes('/') ? path.split('/')[0] : undefined;
+    return dir || ts.id;
+  }
+
   private async useTileset(ts: Tileset) {
     this.tileset = ts;
-    this.tilesetKey = `tileset:${ts.id}:${Date.now()}`;
+    // One stamp for the Phaser texture AND the palette's CSS background: the
+    // sheet keeps its path across re-forges, so without it the browser served
+    // the cached previous sheet to the swatches while Phaser painted the new
+    // one — you clicked one tile and another appeared.
+    this.tilesetStamp = Date.now();
+    this.tilesetKey = `tileset:${ts.id}:${this.tilesetStamp}`;
     await new Promise<void>((resolve, reject) => {
-      this.load.image(this.tilesetKey, `${fileUrl(ts.image)}?t=${Date.now()}`);
+      this.load.image(this.tilesetKey, `${fileUrl(ts.image)}?t=${this.tilesetStamp}`);
       this.load.once(Phaser.Loader.Events.COMPLETE, () => resolve());
       this.load.once(Phaser.Loader.Events.FILE_LOAD_ERROR, () => reject(new Error('tileset load failed')));
       this.load.start();
@@ -3366,6 +3396,13 @@ export class WorldToolScene extends Phaser.Scene {
       // A crash while painting an unsaved new world parks its strokes under
       // the tileset's key; a fresh blank canvas is where they come back.
       this.restoreWorldDraft();
+    } else {
+      // A tilemap holds a TEXTURE KEY, so a re-forge or a re-cut left the
+      // grid painting the previous sheet until the page was reloaded — the
+      // palette said one tile and the brush laid down another. Rebuild the
+      // grid on the new texture, keeping what is painted (tile INDICES are
+      // unchanged by a re-cut, and a re-forge redraws the same 24 subjects).
+      this.buildMap(this.map.width, this.map.height, this.layers.map((l) => this.layerToData(l)));
     }
   }
 
@@ -3378,7 +3415,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.paletteHost.innerHTML = '';
     const grid = document.createElement('div');
     grid.className = 'g-tile-grid';
-    const url = fileUrl(ts.image);
+    const url = `${fileUrl(ts.image)}?t=${this.tilesetStamp}`;
     ts.tiles.forEach((tile) => {
       const cell = document.createElement('div');
       cell.className = 'g-tile';
@@ -3479,7 +3516,24 @@ export class WorldToolScene extends Phaser.Scene {
       (this.scale.width - 660) / (width * ts.tileWidth),
       (this.scale.height - 120) / (height * ts.tileHeight),
     );
-    cam.setZoom(Phaser.Math.Clamp(fit, 0.2, 1.5));
+    cam.setZoom(Phaser.Math.Clamp(fit, this.minZoom(), 1.5));
+  }
+
+  /**
+   * How far out the wheel may go. A flat floor of 0.15 was fine for 64px
+   * tiles and trapped anything larger: a 40x23 grid of 512px tiles is
+   * 20480px wide, which needs 0.06 to fit, so the level stayed bigger than
+   * the viewport no matter how far you scrolled. Follow the level instead,
+   * and allow half again past a snug fit so there is room around the edges.
+   */
+  private minZoom(): number {
+    const bounds = this.levelBounds();
+    if (!bounds.width || !bounds.height) return 0.15;
+    const fit = Math.min(
+      (this.scale.width - 660) / bounds.width,
+      (this.scale.height - 120) / bounds.height,
+    );
+    return Math.min(0.15, Math.max(0.01, fit * 0.5));
   }
 
   /**
@@ -3628,6 +3682,7 @@ export class WorldToolScene extends Phaser.Scene {
       HudShell.setBusyLabel('REPACKING THE TILESET (FREE)...');
       const res = await api.removeTile({
         assetId: ts.id,
+        sourceAssetId: this.sourceDirOf(ts, ts.image),
         sourceFile: 'tileset.png',
         tileWidth: ts.tileWidth,
         tileHeight: ts.tileHeight,
@@ -3771,7 +3826,7 @@ export class WorldToolScene extends Phaser.Scene {
         // there would show the void past the artwork or crop the level.
         if (this.inPlaytest) return;
         const cam = this.cameras.main;
-        cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), 0.15, 4));
+        cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.9 : 1.1), this.minZoom(), 4));
       },
     );
   }

@@ -146,6 +146,7 @@ export const api = {
    */
   seamlessVariant: (body: {
     assetId: string;
+    sourceAssetId?: string;
     sourceFile: string;
     tileWidth: number;
     tileHeight: number;
@@ -164,6 +165,7 @@ export const api = {
   /** Drop one tile from a tileset and repack; returns the old->new index mapping. */
   removeTile: (body: {
     assetId: string;
+    sourceAssetId?: string;
     sourceFile: string;
     tileWidth: number;
     tileHeight: number;

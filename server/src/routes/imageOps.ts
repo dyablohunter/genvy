@@ -455,13 +455,20 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
    * doing that silently would repaint a level with the wrong art.
    */
   app.post<{
-    Body: { assetId: string; sourceFile: string; tileWidth: number; tileHeight: number; index: number };
+    Body: {
+      assetId: string;
+      sourceAssetId?: string;
+      sourceFile: string;
+      tileWidth: number;
+      tileHeight: number;
+      index: number;
+    };
   }>('/api/image/remove-tile', async (req) => {
-    const b = req.body ?? ({} as { assetId: string; sourceFile: string; tileWidth: number; tileHeight: number; index: number });
+    const b = req.body ?? ({} as typeof req.body);
     if (!b.assetId || !b.sourceFile || !b.tileWidth || !b.tileHeight || b.index === undefined) {
       throw new LibraryError(400, 'assetId, sourceFile, tileWidth, tileHeight and index required');
     }
-    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    const raw = await pipe.loadRaw(await loadSource(b.sourceAssetId ?? b.assetId, b.sourceFile));
     const cols = Math.max(1, Math.floor(raw.width / b.tileWidth));
     const rows = Math.max(1, Math.floor(raw.height / b.tileHeight));
     const cells = pipe.cutCells(raw, { cols, rows });
@@ -473,7 +480,10 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
 
     // old index -> new index (-1 for the removed tile).
     const indexMap = cells.map((_, i) => (i === b.index ? -1 : i < b.index ? i : i - 1));
-    const packed = pipe.packCells(kept, Math.min(kept.length, 8));
+    // Repack at the sheet's OWN column count. Dropping to a fixed 8 reshaped
+    // the sheet under a palette that still positions swatches by the old
+    // width, so every swatch below row one showed halves of two tiles.
+    const packed = pipe.packCells(kept, Math.min(kept.length, cols));
     const png = await pipe.toPng(packed);
     const rel = await save(b.assetId, 'tileset.png', png);
     const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
@@ -495,6 +505,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
   app.post<{
     Body: {
       assetId: string;
+      sourceAssetId?: string;
       sourceFile: string;
       tileWidth: number;
       tileHeight: number;
@@ -503,11 +514,11 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       band?: number;
     };
   }>('/api/image/seamless-variant', async (req) => {
-    const b = req.body ?? ({} as { assetId: string; sourceFile: string; tileWidth: number; tileHeight: number; index: number });
+    const b = req.body ?? ({} as typeof req.body);
     if (!b.assetId || !b.sourceFile || !b.tileWidth || !b.tileHeight || b.index === undefined) {
       throw new LibraryError(400, 'assetId, sourceFile, tileWidth, tileHeight and index required');
     }
-    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
+    const raw = await pipe.loadRaw(await loadSource(b.sourceAssetId ?? b.assetId, b.sourceFile));
     const cols = Math.max(1, Math.floor(raw.width / b.tileWidth));
     const rows = Math.max(1, Math.floor(raw.height / b.tileHeight));
     const cells = pipe.cutCells(raw, { cols, rows });
@@ -519,7 +530,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     // painted with it stays exactly as it was.
     const variant = makeSeamlessTile(source, b.mode ?? 'offset', b.band ? { band: b.band } : {});
     const next = [...cells, variant];
-    const packed = pipe.packCells(next, Math.min(next.length, 8));
+    const packed = pipe.packCells(next, Math.min(next.length, cols));
     const png = await pipe.toPng(packed);
     const rel = await save(b.assetId, 'tileset.png', png);
     const thumbRel = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png));
@@ -539,8 +550,18 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     if (!b.assetId || !b.sourceFile || !b.cols || !b.rows) {
       throw new LibraryError(400, 'assetId, sourceFile, cols, rows required');
     }
-    const raw = await pipe.loadRaw(await loadSource(b.assetId, b.sourceFile));
-    let cells = pipe.cutCells(raw, b);
+    const raw = await pipe.loadRaw(await loadSource(b.sourceAssetId ?? b.assetId, b.sourceFile));
+    // The model draws the right NUMBER of cells on the wrong lattice, and
+    // the drift accumulates downward — an even cut bisects the lower rows.
+    // Snap each line to the gutter the model actually drew.
+    const grid = pipe.detectTileGrid(raw, b.cols, b.rows);
+    let cells = pipe.cutCellsAt(raw, grid.xs, grid.ys);
+    if (grid.corrected > 0) {
+      req.log.info(
+        { corrected: grid.corrected, xs: grid.xs, ys: grid.ys },
+        'tile grid snapped to the drawn gutters',
+      );
+    }
 
     const size = b.targetTileSize ?? 64;
     cells = await Promise.all(cells.map((c) => pipe.resizeCell(c, size, size, 'nearest')));
@@ -596,6 +617,7 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       tileCount: cells.length,
       indexMap,
       thumbnail: thumbRel,
+      gridCorrected: grid.corrected,
       ...(gate
         ? {
             gate: {

@@ -543,11 +543,21 @@ export interface AutoSliceResponse {
 
 export interface ExtractTilesRequest {
   assetId: string;
+  /**
+   * Directory the source sheet lives in, when it is not the asset's own.
+   * A re-forge used to write its render into a fresh directory while the
+   * asset kept its id, so a later free re-cut read the PREVIOUS sheet out of
+   * the asset's own folder and quietly restored the old tiles.
+   */
+  sourceAssetId?: string;
   sourceFile: string;
+  /**
+   * How many cells the sheet was drawn with. The cut lines themselves are
+   * measured off the drawn gutters (`detectTileGrid`) rather than assumed to
+   * be even, so there is nothing to offset by hand.
+   */
   cols: number;
   rows: number;
-  offsetX?: number;
-  offsetY?: number;
   targetTileSize?: number;
   dedupe?: boolean;
   /** Indices that must tile with themselves (terrain). Omit = judge them all. */
@@ -562,6 +572,8 @@ export interface ExtractTilesResponse {
   /** original cell index -> packed tile index (after dedupe) */
   indexMap: number[];
   thumbnail: string;
+  /** How many cut lines the drawn gutters pulled off the even lattice. */
+  gridCorrected?: number;
   /** Tile-gate verdict (World Maker v2 §W1) — advisory; the set is saved regardless. */
   gate?: {
     score: number;
