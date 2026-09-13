@@ -207,6 +207,24 @@ export const api = {
     outName?: string;
   }) =>
     request<{ thumbnail: string }>('POST', '/api/image/thumbnail', body),
+  /**
+   * Paint a level's own icon from its grid — free, no AI. 409 when nothing is
+   * painted yet, which is a reason to keep the palette fallback, not an error.
+   */
+  levelIcon: (body: {
+    assetId: string;
+    sourceAssetId: string;
+    sourceFile: string;
+    tileWidth: number;
+    tileHeight: number;
+    tiles: number[][];
+    props?: { tile: number; x: number; y: number; w: number; h: number }[];
+  }) =>
+    request<{ thumbnail: string; preview: string; width: number; height: number }>(
+      'POST',
+      '/api/image/level-icon',
+      body,
+    ),
   /** Byte-faithful rectangle crop of a library image — free, no AI. */
   cropRect: (body: import('@genvy/shared').CropRectRequest) =>
     request<{ fileRef: import('@genvy/shared').FileRef }>('POST', '/api/image/crop-rect', body),

@@ -128,7 +128,8 @@ export class WorldToolScene extends Phaser.Scene {
   /**
    * Which layer strokes land on. A level is not a TYPE — it is whichever
    * layers it happens to have — so there is no mode to choose, only a layer
-   * to aim at. `backdrop` is selectable but not paintable: the AI paints it.
+   * to aim at. `backdrop` stays part of the schema (a level has one) but is
+   * not offered here: no brush lands on it, the model paints it in step 1.
    */
   private layer: LevelLayer = 'tiles';
   private layerButtons = new Map<LevelLayer, GenvyButton>();
@@ -1226,8 +1227,12 @@ export class WorldToolScene extends Phaser.Scene {
     // and a layer the level does not have is simply not offered.
     const targetRow = document.createElement('div');
     targetRow.className = 'g-row';
+    // TILES and ZONES only: the two layers a brush actually lands on.
+    // BACKDROP sat here looking like a third, but selecting it just jumped to
+    // step 1 — a navigation button wearing a layer's clothes, next to an
+    // EDIT CONCEPT that already goes there. The backdrop is still a layer of
+    // the level; it is just not something you paint with these tools.
     for (const [id, label] of [
-      ['backdrop', 'BACKDROP'],
       ['tiles', 'TILES'],
       ['zones', 'ZONES'],
     ] as const) {
@@ -1236,11 +1241,9 @@ export class WorldToolScene extends Phaser.Scene {
       btn.style.flex = '1 1 0';
       btn.style.minWidth = '0';
       btn.title =
-        id === 'backdrop'
-          ? 'The painted artwork. Selected to work on it in step 1; strokes do not apply here.'
-          : id === 'tiles'
-            ? 'The tile grid.'
-            : 'Collision and gameplay zones. Click again to hide them.';
+        id === 'tiles'
+          ? 'The tile grid.'
+          : 'Collision and gameplay zones. Click again to hide them.';
       btn.onClick(() => {
         UISound.play('click');
         // Pressing the layer you are already on toggles whether you can SEE
@@ -1392,7 +1395,20 @@ export class WorldToolScene extends Phaser.Scene {
     clearBtn.setAttribute('label', 'CLEAR ALL');
     clearBtn.onClick(() => {
       UISound.play('click');
+      this.pushUndo();
       this.pushMaskUndo();
+      // Clears the layer the tools are AIMED at. It used to clear zones only
+      // and hide itself everywhere else, so a tile level had a row with just
+      // an eraser in it and no way to start the grid over.
+      if (this.layer === 'tiles') {
+        // -1 is the empty cell, which is what `fill` writes across the layer.
+        for (const layer of this.layers) layer.fill(-1);
+        this.props = [];
+        this.lastPropBlock = null;
+        this.drawProps();
+        this.draftDirty = true;
+        return HudShell.toast('TILES AND PROPS CLEARED');
+      }
       for (const row of this.mask) row.fill(0);
       this.shapes = [];
       this.endPenPath(true);
@@ -1462,7 +1478,7 @@ export class WorldToolScene extends Phaser.Scene {
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
     // painting experience is identical between the two crafts.
-    for (const el of [kindField, frictionField, cellField, clearBtn]) {
+    for (const el of [kindField, frictionField, cellField]) {
       if (el instanceof HTMLElement) el.dataset.zones = '1';
     }
     this.refreshToolsPanel();
@@ -1679,7 +1695,7 @@ export class WorldToolScene extends Phaser.Scene {
     if (this.layer === 'zones' && this.mask.length === 0 && this.tilesActive) this.layer = 'tiles';
     for (const [id, btn] of this.layerButtons) {
       // Only layers this level HAS are offered, and the armed one is lit.
-      const present = id === 'backdrop' ? this.sceneActive : id === 'tiles' ? this.tilesActive : true;
+      const present = id === 'tiles' ? this.tilesActive : true;
       btn.style.display = present ? '' : 'none';
       btn.setAttribute('variant', id === this.layer ? 'accent' : '');
       // Armed AND hidden are separate facts: the accent says where strokes
@@ -1699,12 +1715,6 @@ export class WorldToolScene extends Phaser.Scene {
   private setLayer(layer: LevelLayer) {
     this.layer = layer;
     this.endPenPath(true);
-    if (layer === 'backdrop') {
-      // The backdrop is painted by the model, not by a brush: selecting it
-      // takes you to where it IS edited rather than pretending otherwise.
-      this.setStage('concept');
-      return;
-    }
     // Only what the LAYER changes: which rows the panel offers, and the
     // cursor. Re-running the stage would hide and re-show every panel,
     // entrance animations and all, for what is a one-word change.
@@ -4647,6 +4657,13 @@ export class WorldToolScene extends Phaser.Scene {
     // icon (its first tile) — a whole sheet shrunk to 64px is a mosaic.
     const scene = this.activeScene;
     const ts = this.tileset;
+    // No backdrop but a painted grid? Then the ARRANGEMENT is what this level
+    // looks like. Falling back to the palette's first tile gave every grid
+    // level built from one tileset the same square.
+    if (!scene && ts) {
+      const grid = await this.gridIcon(levelId, ts);
+      if (grid) return grid;
+    }
     const src = scene
       ? { dir: scene.id, path: scene.image.path, at: scene.updatedAt }
       : ts?.thumbnail
@@ -4675,6 +4692,45 @@ export class WorldToolScene extends Phaser.Scene {
       return thumbnail;
     } catch {
       // A missing icon is not worth failing a save over.
+      return undefined;
+    }
+  }
+
+  /**
+   * Paint this level's icon and card preview from its own grid. Free: the
+   * tiles are on disk and the arrangement is in memory. Returns undefined
+   * when nothing is painted yet, so the caller keeps the palette fallback.
+   */
+  private async gridIcon(levelId: string, ts: Tileset): Promise<string | undefined> {
+    const tiles = this.layers[0] ? this.layerToData(this.layers[0]) : [];
+    if (tiles.length === 0 && this.props.length === 0) return undefined;
+    // An exact signature of what would be painted, so a work autosave that
+    // changed nothing visible does not recompose and rewrite two files.
+    const shape =
+      tiles.map((row) => row.join(',')).join(';') +
+      '|' +
+      this.props.map((pr) => `${pr.tile}@${pr.x},${pr.y},${pr.w},${pr.h}`).join(';');
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < shape.length; i++) {
+      hash = ((hash ^ shape.charCodeAt(i)) * 0x01000193) >>> 0;
+    }
+    const stamp = `${levelId}:grid:${ts.image.path}:${hash.toString(36)}`;
+    if (this.levelThumbFor === stamp) return this.levelThumbCache;
+    try {
+      const { thumbnail } = await api.levelIcon({
+        assetId: levelId,
+        sourceAssetId: this.sourceDirOf(ts, ts.image),
+        sourceFile: ts.image.path.split('/').pop() ?? 'tileset.png',
+        tileWidth: ts.tileWidth,
+        tileHeight: ts.tileHeight,
+        tiles,
+        props: this.props,
+      });
+      this.levelThumbFor = stamp;
+      this.levelThumbCache = thumbnail;
+      return thumbnail;
+    } catch {
+      // 409 = nothing painted; anything else is not worth failing a save for.
       return undefined;
     }
   }

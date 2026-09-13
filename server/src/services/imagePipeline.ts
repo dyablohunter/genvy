@@ -287,6 +287,89 @@ export function cutCellsAt(img: RawImage, xs: number[], ys: number[]): RawImage[
   return cells;
 }
 
+/**
+ * What a tile level LOOKS like, painted from its own grid.
+ *
+ * A level with no backdrop had no picture of its own: the inventory fell back
+ * to its tileset's first tile, so every grid level built from one palette
+ * showed the same square. The level's artwork is the arrangement, and the
+ * arrangement is data we already hold — so compose it here rather than
+ * screenshotting a canvas, which would capture whatever the camera happened
+ * to be framing (and the grid lines and the zone overlay with it).
+ */
+export interface TileGridPlan {
+  /** Rows of tile indices into the sheet; -1 is an empty cell. */
+  tiles: number[][];
+  /** One tile stretched across a block of cells. */
+  props?: { tile: number; x: number; y: number; w: number; h: number }[];
+  tileWidth: number;
+  tileHeight: number;
+}
+
+/**
+ * Paint a level's grid at full tile resolution. Returns null when there is
+ * nothing painted — a blank icon is worse than falling back to the palette.
+ */
+export function composeTileGrid(sheet: RawImage, plan: TileGridPlan): RawImage | null {
+  const tw = Math.max(1, Math.floor(plan.tileWidth));
+  const th = Math.max(1, Math.floor(plan.tileHeight));
+  const sheetCols = Math.max(1, Math.floor(sheet.width / tw));
+  const rows = plan.tiles.length;
+  const cols = plan.tiles.reduce((n, row) => Math.max(n, row.length), 0);
+  const props = plan.props ?? [];
+  if ((rows === 0 || cols === 0) && props.length === 0) return null;
+
+  const gridW = Math.max(cols, ...props.map((p) => p.x + p.w), 1);
+  const gridH = Math.max(rows, ...props.map((p) => p.y + p.h), 1);
+  const width = gridW * tw;
+  const height = gridH * th;
+  const out = { data: Buffer.alloc(width * height * 4), width, height };
+
+  /** Copy tile `index` from the sheet into the output rect, nearest-neighbour. */
+  const blit = (index: number, dx: number, dy: number, dw: number, dh: number) => {
+    const sx = (index % sheetCols) * tw;
+    const sy = Math.floor(index / sheetCols) * th;
+    if (sy + th > sheet.height || sx + tw > sheet.width) return;
+    for (let y = 0; y < dh; y++) {
+      const ty = dy + y;
+      if (ty < 0 || ty >= height) continue;
+      // Source row for this destination row: 1:1 when unstretched.
+      const srcRow = sy + Math.min(th - 1, Math.floor((y * th) / dh));
+      for (let x = 0; x < dw; x++) {
+        const tx = dx + x;
+        if (tx < 0 || tx >= width) continue;
+        const srcCol = sx + Math.min(tw - 1, Math.floor((x * tw) / dw));
+        const si = (srcRow * sheet.width + srcCol) * 4;
+        const di = (ty * width + tx) * 4;
+        const alpha = sheet.data[si + 3]!;
+        if (alpha === 0) continue; // keep whatever is already there
+        out.data[di] = sheet.data[si]!;
+        out.data[di + 1] = sheet.data[si + 1]!;
+        out.data[di + 2] = sheet.data[si + 2]!;
+        out.data[di + 3] = alpha;
+      }
+    }
+  };
+
+  let painted = 0;
+  for (let row = 0; row < rows; row++) {
+    const cells = plan.tiles[row]!;
+    for (let col = 0; col < cells.length; col++) {
+      const index = cells[col]!;
+      if (index < 0) continue;
+      blit(index, col * tw, row * th, tw, th);
+      painted++;
+    }
+  }
+  // Props sit ON the grid, so they go down after it.
+  for (const prop of props) {
+    if (prop.tile < 0 || prop.w <= 0 || prop.h <= 0) continue;
+    blit(prop.tile, prop.x * tw, prop.y * th, prop.w * tw, prop.h * th);
+    painted++;
+  }
+  return painted > 0 ? out : null;
+}
+
 export interface CellBox {
   x: number;
   y: number;

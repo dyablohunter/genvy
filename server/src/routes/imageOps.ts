@@ -649,6 +649,48 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
     };
   });
 
+  /**
+   * An icon and a card preview for a level that has no backdrop, painted from
+   * its own grid. Free and deterministic: the tiles are already on disk and
+   * the arrangement comes in with the request, so a level that is not yet
+   * written can still be given a picture in the same save.
+   */
+  app.post<{
+    Body: {
+      /** Where the files are written: the level's own directory. */
+      assetId: string;
+      /** Where the sheet is read from: the tileset's directory. */
+      sourceAssetId: string;
+      sourceFile: string;
+      tileWidth: number;
+      tileHeight: number;
+      tiles: number[][];
+      props?: { tile: number; x: number; y: number; w: number; h: number }[];
+    };
+  }>('/api/image/level-icon', async (req) => {
+    const b = req.body ?? ({} as typeof req.body);
+    if (!b.assetId || !b.sourceAssetId || !b.sourceFile || !b.tileWidth || !b.tileHeight) {
+      throw new LibraryError(
+        400,
+        'assetId, sourceAssetId, sourceFile, tileWidth and tileHeight required',
+      );
+    }
+    const sheet = await pipe.loadRaw(await loadSource(b.sourceAssetId, b.sourceFile));
+    const grid = pipe.composeTileGrid(sheet, {
+      tiles: Array.isArray(b.tiles) ? b.tiles : [],
+      ...(b.props ? { props: b.props } : {}),
+      tileWidth: b.tileWidth,
+      tileHeight: b.tileHeight,
+    });
+    // Nothing painted: say so rather than writing a blank square, so the
+    // caller can keep the palette fallback.
+    if (!grid) throw new LibraryError(409, 'nothing painted yet');
+    const png = await pipe.toPng(grid);
+    const thumbnail = await save(b.assetId, 'thumb.png', await pipe.makeThumbnail(png, 64));
+    const preview = await save(b.assetId, 'preview-384.png', await pipe.makeThumbnail(png, 384));
+    return { thumbnail, preview, width: grid.width, height: grid.height };
+  });
+
   app.post<{ Body: DownscaleRequest }>('/api/image/downscale', async (req) => {
     const b = req.body ?? ({} as DownscaleRequest);
     if (!b.assetId || !b.sourceFile) throw new LibraryError(400, 'assetId and sourceFile required');
