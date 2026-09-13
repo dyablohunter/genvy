@@ -567,20 +567,104 @@ genvy-button[data-off] button {
 }
 
 /* ---------- Asset cards / drawer ---------- */
-/* Slide-in inventory: full viewport height minus the header, flush right. */
+/* The inventory is two horizontal bands under the header, the width of the
+   header: the tool row, then the open tool's shelf. A 320px right-hand
+   column covered the very thing being worked on. */
 #collection-drawer {
   position: absolute;
   top: 44px;
+  left: 0;
   right: 0;
-  bottom: 0;
-  width: 320px;
   z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--hud-bg-solid);
+  border-bottom: 1px solid var(--hud-line);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+/* Band one: the main menu. Scrolls sideways on a narrow window rather than
+   wrapping into a second row that would double the band's height. */
+.g-inv-tools {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  /* The rail reads as chrome across the top of the screen; show it only
+     when the row is actually being scrolled through. */
+  scrollbar-width: none;
+}
+
+.g-inv-tools::-webkit-scrollbar {
+  height: 0;
+}
+
+.g-inv-tool {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--hud-text-dim);
+  border: 1px solid var(--hud-line-dim);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.g-inv-tool-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.g-inv-tool:hover {
+  color: var(--hud-line);
+  border-color: var(--hud-line);
+  box-shadow: 0 0 10px rgba(29, 233, 255, 0.3);
+}
+
+.g-inv-tool.active {
+  color: #0b0f16;
+  background: var(--hud-line);
+  border-color: var(--hud-line);
+}
+
+/* A tool that is not online yet still holds its place in the roster. */
+.g-inv-tool.offline {
+  opacity: 0.4;
+}
+
+.g-inv-count {
+  font-family: var(--font-display);
+  font-size: 9px;
+  color: var(--hud-accent);
+}
+
+.g-inv-tool.active .g-inv-count {
+  color: #0b0f16;
+}
+
+/* Band two: the open tool's shelf. Wraps, then scrolls, so the band stays a
+   band instead of growing to the height of the collection. */
+.g-inv-shelf {
+  border-top: 1px solid var(--hud-line-dim);
+  padding: 8px;
+  max-height: 34vh;
   overflow-y: auto;
-  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.55);
-  /* Hangs from the top bar and runs off the bottom edge — only its left
-     edge is a real boundary, so only that edge draws a border. */
-  border-top: none;
-  border-bottom: none;
+}
+
+.g-inv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 6px;
+}
+
+.g-inv-empty {
+  padding: 4px 2px;
 }
 
 #genvy-topbar .inv-btn {
@@ -1580,12 +1664,6 @@ genvy-asset-card .g-type {
 }
 
 /* ---------- Character icon grid ---------- */
-.g-char-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 5px;
-}
-
 .g-char-icon {
   position: relative;
   aspect-ratio: 1;
@@ -1617,15 +1695,13 @@ genvy-asset-card .g-type {
 /* Detail panel sliding out from under the drawer */
 #genvy-char-detail {
   position: absolute;
-  right: 328px; /* flush against the 320px inventory */
-  width: 300px;
-  z-index: 45; /* above the inventory panel */
+  /* `left`/`top`/`max-height` come from placeDetail: the card hangs under the
+     item that opened it, clamped so it never runs off either edge. */
+  width: 320px;
+  z-index: 45; /* above the inventory bands */
   background: var(--hud-bg-solid);
   border: 1px solid var(--hud-line);
-  box-shadow: -6px 0 24px rgba(0, 0, 0, 0.5);
-  /* Never taller than the screen: a card whose body would overflow scrolls
-     its own body instead of hanging its buttons off the bottom edge. */
-  max-height: calc(100vh - 64px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
 }
@@ -2244,20 +2320,7 @@ body.g-playtest .g-playtest-mask {
   image-rendering: pixelated;
 }
 
-/* The inventory scrolls in ONE place: the panel body. The drawer scrolling
-   too gave two nested scrollers, which is why the list ended early and the
-   last rows were unreachable. */
+/* The inventory scrolls in ONE place: the shelf. */
 #collection-drawer {
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-#collection-drawer .gp-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: none;
-  overflow-y: auto;
-  /* Room to scroll past the last row rather than ending flush against it. */
-  padding-bottom: 24px;
 }

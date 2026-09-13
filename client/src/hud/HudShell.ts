@@ -14,7 +14,7 @@ import { collection } from '../state/collection.js';
 import { expectedDuration, recordDuration } from './progress.js';
 import { api, ApiError } from '../api/client.js';
 import type { AssetIndexEntry } from '@genvy/shared';
-import { getSubject } from '@genvy/shared';
+import { getSubject, TOOLS } from '@genvy/shared';
 
 /** The subject label of a forge session ("CHARACTER", "WEAPON", ...), if known. */
 function subjectLabel(
@@ -30,6 +30,42 @@ function subjectLabel(
  * so only standalone asset types get their own row.
  */
 const DRAWER_HIDDEN_TYPES = new Set(['animation', 'spritesheet', 'character']);
+
+/**
+ * Which asset types belong to which tool. The inventory is filed by the tool
+ * that MAKES a thing, so finding it is the same gesture as making it: a level,
+ * its backdrop and its tileset all came out of World Maker and all sit under
+ * it. Sprites are the exception — they live as forge workspaces rather than
+ * index rows, so that tool's shelf is built from those instead.
+ */
+const TOOL_ASSET_TYPES: Record<string, string[]> = {
+  sprite: [],
+  world: ['level', 'world', 'scene', 'tileset'],
+  bundle: ['game'],
+};
+
+/**
+ * One sprite per forge session: the session's own workspace plus its
+ * variants. A variant whose session grid was discarded still counts as a
+ * sprite of its own, or work would vanish from the shelf.
+ */
+function spriteGroups(workspaces: import('@genvy/shared').WorkspaceInfo[]) {
+  const sessions = workspaces.filter((w) => w.files.includes('variants.png'));
+  const groups: {
+    session: import('@genvy/shared').WorkspaceInfo | null;
+    children: import('@genvy/shared').WorkspaceInfo[];
+  }[] = sessions.map((session) => ({
+    session,
+    children: workspaces.filter((w) => w.source?.sessionId === session.id),
+  }));
+  const sessionIds = new Set(sessions.map((s) => s.id));
+  for (const kid of workspaces) {
+    if (!kid.files.includes('variant.png')) continue;
+    if (sessionIds.has(kid.source?.sessionId ?? '')) continue;
+    groups.push({ session: null, children: [kid] });
+  }
+  return groups;
+}
 
 export type Dock = 'left' | 'right' | 'bottom' | 'center';
 
@@ -75,8 +111,11 @@ class HudShellImpl {
   private invBtn!: HTMLElement;
   private drawerDismiss: ((ev: PointerEvent) => void) | null = null;
   private backBtn!: HTMLElement;
-  private drawer: GenvyPanel | null = null;
+  private drawer: HTMLElement | null = null;
   private drawerList: HTMLElement | null = null;
+  /** The tool whose shelf is open, or null while only the tool row shows. */
+  private invTool: string | null = null;
+  private invToolRow: HTMLElement | null = null;
   private keyHintTimer: ReturnType<typeof setTimeout> | null = null;
   onBackToHub: (() => void) | null = null;
   onOpenAsset: ((entry: AssetIndexEntry) => void) | null = null;
@@ -362,14 +401,24 @@ class HudShellImpl {
 
   showDrawer() {
     if (this.drawer) return;
-    const drawer = this.makePanel('INVENTORY', 'right');
+    // Two horizontal bands under the header, the width of the header: the
+    // tools, then the shelf of whichever tool is open. A 320px column on the
+    // right had to choose between showing the artwork and showing enough of
+    // it, and it covered the thing being worked on to do either.
+    const drawer = document.createElement('div');
     this.drawer = drawer;
     drawer.id = 'collection-drawer';
     this.root.appendChild(drawer);
+    this.invToolRow = document.createElement('div');
+    this.invToolRow.className = 'g-inv-tools';
     this.drawerList = document.createElement('div');
-    this.drawerList.className = 'g-asset-list';
-    drawer.bodyEl.appendChild(this.drawerList);
+    this.drawerList.className = 'g-inv-shelf';
+    drawer.append(this.invToolRow, this.drawerList);
     this.renderDrawer(collection.entries);
+    // The tool row shows a count per tool, and the sprite count comes from
+    // the workspace list — a ~25ms call, so fetch it on open rather than
+    // leaving that one button blank until its shelf is opened.
+    if (!this.workspaceCache) void this.refreshWorkspaces();
     void slideIn(drawer, 'top');
     // Clicking anywhere outside the inventory (or its detail flyout) closes it.
     this.drawerDismiss = (ev: PointerEvent) => {
@@ -392,6 +441,7 @@ class HudShellImpl {
     const d = this.drawer;
     this.drawer = null;
     this.drawerList = null;
+    this.invToolRow = null;
     void slideOut(d, 'top').then(() => d.remove());
   }
 
@@ -410,52 +460,91 @@ class HudShellImpl {
   private workspaceStale = true;
 
   private renderDrawer(entries: AssetIndexEntry[]) {
-    if (!this.drawerList) return;
+    this.renderToolRow(entries);
+    this.renderShelf(entries);
+  }
+
+  /**
+   * Band one: the main menu, icons and all. Every tool is here whether it is
+   * online or not, in the hub's own order, so the inventory reads as the same
+   * roster — and Game Assembler sits at the end where the games will land.
+   */
+  private renderToolRow(entries: AssetIndexEntry[]) {
+    const row = this.invToolRow;
+    if (!row) return;
+    row.innerHTML = '';
+    for (const tool of TOOLS) {
+      const types = TOOL_ASSET_TYPES[tool.id] ?? [];
+      const count = entries.filter((e) => types.includes(e.type)).length;
+      const btn = document.createElement('div');
+      btn.className = 'g-inv-tool';
+      btn.dataset.tool = tool.id;
+      if (!tool.ready) btn.classList.add('offline');
+      if (this.invTool === tool.id) btn.classList.add('active');
+      btn.title = `${tool.name} — ${tool.blurb}`;
+      // Twenty named buttons do not fit a 1600px row, and the one that got
+      // pushed off the end was Game Assembler — the shelf of finished games.
+      // Tools that are online carry their name; the rest are their icon, and
+      // say who they are on hover.
+      btn.innerHTML =
+        `<span class="g-inv-tool-icon">${tool.icon}</span>` +
+        (tool.ready ? `<span class="g-inv-tool-name">${escapeHtml(tool.name)}</span>` : '');
+      const badge = document.createElement('span');
+      badge.className = 'g-inv-count';
+      // Sprites are counted from the workspace list rather than the index;
+      // the tool row must show the number whichever shelf happens to be open.
+      const n =
+        tool.id === 'sprite'
+          ? this.workspaceCache
+            ? spriteGroups(this.workspaceCache).length
+            : 0
+          : count;
+      badge.textContent = n > 0 ? String(n) : '';
+      btn.appendChild(badge);
+      btn.addEventListener('mouseenter', () => UISound.play('hover'));
+      btn.addEventListener('click', () => {
+        UISound.play('click');
+        this.invTool = this.invTool === tool.id ? null : tool.id;
+        this.renderDrawer(collection.entries);
+      });
+      row.appendChild(btn);
+    }
+  }
+
+  /** Band two: what the open tool has made. Absent until a tool is picked. */
+  private renderShelf(entries: AssetIndexEntry[]) {
+    const shelf = this.drawerList;
+    if (!shelf) return;
     const render = ++this.drawerRender;
-    this.drawerList.innerHTML = '';
+    shelf.innerHTML = '';
     this.actionRow = null;
     this.actionRowFor = null;
     this.closeCharDetail();
+    shelf.hidden = !this.invTool;
+    if (!this.invTool) return;
 
-    // Characters render as a compact icon grid, filled asynchronously.
-    const spritesHeading = document.createElement('div');
-    spritesHeading.className = 'g-hint';
-    spritesHeading.textContent = 'SPRITES';
-    const gridHost = document.createElement('div');
-    this.drawerList.append(spritesHeading, gridHost);
-    void this.buildCharacterGrid(render, gridHost);
-
-    const visible = entries.filter((e) => !DRAWER_HIDDEN_TYPES.has(e.type));
-    if (visible.length > 0) {
-      const divider = document.createElement('div');
-      divider.className = 'g-divider';
-      const heading = document.createElement('div');
-      heading.className = 'g-hint';
-      // Name what is actually there. "OTHER ASSETS" was a category for
-      // things we can list precisely.
-      const kinds = [...new Set(visible.map((e) => e.type))];
-      const LABELS: Record<string, string> = {
-        level: 'LEVELS',
-        world: 'LEVELS',
-        scene: 'BACKDROPS',
-        tileset: 'TILESETS',
-      };
-      const named = [...new Set(kinds.map((k) => LABELS[k] ?? `${k.toUpperCase()}S`))];
-      heading.textContent = named.join(' · ');
-      this.drawerList.append(divider, heading);
+    if (this.invTool === 'sprite') {
+      void this.buildCharacterGrid(render, shelf);
+      return;
     }
-    // Same shape as the characters above: a grid of square icons, with the
-    // name and actions on click. A column of wide cards made five tilesets
-    // fill the drawer and pushed everything else out of reach.
+
+    const types = TOOL_ASSET_TYPES[this.invTool] ?? [];
+    const visible = entries.filter((e) => types.includes(e.type) && !DRAWER_HIDDEN_TYPES.has(e.type));
+    if (visible.length === 0) {
+      shelf.appendChild(this.emptyShelf());
+      return;
+    }
     const grid = document.createElement('div');
-    grid.className = 'g-char-grid';
-    for (const entry of visible.slice(0, 60)) {
+    grid.className = 'g-inv-grid';
+    for (const entry of visible.slice(0, 120)) {
       const icon = document.createElement('div');
       icon.className = 'g-char-icon';
       icon.title = `${entry.name} · ${entry.type.toUpperCase()}`;
       if (entry.thumbnail) {
         const img = document.createElement('img');
         img.src = `/library/files/${entry.thumbnail}`;
+        img.loading = 'lazy';
+        img.decoding = 'async';
         icon.appendChild(img);
       } else {
         icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
@@ -467,7 +556,14 @@ class HudShellImpl {
       });
       grid.appendChild(icon);
     }
-    this.drawerList.appendChild(grid);
+    shelf.appendChild(grid);
+  }
+
+  private emptyShelf(): HTMLElement {
+    const hint = document.createElement('div');
+    hint.className = 'g-hint g-inv-empty';
+    hint.textContent = 'EMPTY';
+    return hint;
   }
 
   /** Characters as a 5-column icon grid; clicking one opens its detail panel. */
@@ -489,33 +585,16 @@ class HudShellImpl {
       if (render !== this.drawerRender) return;
     }
 
-    const sessions = workspaces.filter((w) => w.files.includes('variants.png'));
-    const groups: {
-      session: import('@genvy/shared').WorkspaceInfo | null;
-      children: import('@genvy/shared').WorkspaceInfo[];
-    }[] = sessions.map((session) => ({
-      session,
-      children: workspaces.filter((w) => w.source?.sessionId === session.id),
-    }));
-    // Workspaces whose session grid was discarded still deserve an icon.
-    const sessionIds = new Set(sessions.map((s) => s.id));
-    for (const kid of workspaces) {
-      if (!kid.files.includes('variant.png')) continue;
-      if (sessionIds.has(kid.source?.sessionId ?? '')) continue;
-      groups.push({ session: null, children: [kid] });
-    }
+    const groups = spriteGroups(workspaces);
 
     host.innerHTML = '';
     if (groups.length === 0) {
-      const hint = document.createElement('div');
-      hint.className = 'g-hint';
-      hint.textContent = 'NO SPRITES YET. FORGE ONE.';
-      host.appendChild(hint);
+      host.appendChild(this.emptyShelf());
       return;
     }
 
     const grid = document.createElement('div');
-    grid.className = 'g-char-grid';
+    grid.className = 'g-inv-grid';
     for (const group of groups) {
       const slots = this.variantSlots(group.session, group.children);
       // The ICON is the first version — V1, or the only one when a session
@@ -622,11 +701,10 @@ class HudShellImpl {
     this.closeCharDetail();
     const detail = this.sessionCard(session, children, slots);
     detail.id = 'genvy-char-detail';
-    const rect = anchor.getBoundingClientRect();
-    detail.style.top = `${Math.min(rect.top, window.innerHeight - 260)}px`;
     this.root.appendChild(detail);
+    this.placeDetail(detail, anchor);
     this.charDetail = detail;
-    void slideIn(detail, 'right');
+    void slideIn(detail, 'top');
 
     // Any click outside the panel (or on another icon) dismisses it.
     this.charDetailDismiss = (ev: PointerEvent) => {
@@ -640,6 +718,27 @@ class HudShellImpl {
 
   private charDetail: HTMLElement | null = null;
   private charDetailDismiss: ((ev: PointerEvent) => void) | null = null;
+
+  /**
+   * Park the detail card directly under the item that opened it, centred on
+   * it — but clamped to the viewport, so an item at either end of the shelf
+   * does not push its card off the edge of the screen. It also never runs
+   * past the bottom: the card's own body scrolls instead.
+   */
+  private placeDetail(detail: HTMLElement, anchor: HTMLElement) {
+    const margin = 8;
+    const rect = anchor.getBoundingClientRect();
+    const width = detail.offsetWidth || 320;
+    const left = Math.min(
+      Math.max(margin, rect.left + rect.width / 2 - width / 2),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    const top = rect.bottom + 6;
+    detail.style.left = `${Math.round(left)}px`;
+    detail.style.right = 'auto';
+    detail.style.top = `${Math.round(top)}px`;
+    detail.style.maxHeight = `${Math.max(220, window.innerHeight - top - margin)}px`;
+  }
 
   private closeCharDetail() {
     if (this.charDetailDismiss) {
@@ -908,22 +1007,14 @@ class HudShellImpl {
     });
     detail.append(name, preview, open, rename, del);
 
-    const rect = card.getBoundingClientRect();
+    // Place it AFTER mounting, against its real width: the card hangs under
+    // the item that opened it and is clamped to the viewport, so an item at
+    // either end of the shelf keeps its OPEN and DELETE buttons on screen.
     this.root.appendChild(detail);
-    // Place it AFTER mounting, against its real height. A guessed height
-    // (320px) was shorter than the card actually is, so clicking an icon low
-    // in the list pushed its bottom - the OPEN and DELETE buttons - off the
-    // screen. Clamped under the top bar and above the viewport floor; a card
-    // taller than the viewport starts at the top and scrolls its own body.
-    const margin = 12;
-    const top = Math.max(
-      52,
-      Math.min(rect.top, window.innerHeight - detail.offsetHeight - margin),
-    );
-    detail.style.top = `${top}px`;
+    this.placeDetail(detail, card);
     this.charDetail = detail;
     this.actionRowFor = entry.id;
-    void slideIn(detail, 'right');
+    void slideIn(detail, 'top');
 
     this.charDetailDismiss = (ev: PointerEvent) => {
       if (detail.contains(ev.target as Node)) return;

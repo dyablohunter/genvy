@@ -3475,7 +3475,12 @@ export class WorldToolScene extends Phaser.Scene {
 
   // ---------------- Map handling ----------------
 
-  private buildMap(width: number, height: number, layerData?: number[][][]) {
+  /**
+   * (Re)build the grid. `keepView` re-lays the tiles without touching the
+   * camera — growing the level while painting rebuilds the map, and re-fitting
+   * the camera on every edge stroke yanked the view out from under the brush.
+   */
+  private buildMap(width: number, height: number, layerData?: number[][][], keepView = false) {
     if (!this.tileset) return;
     for (const layer of this.layers) layer.destroy();
     this.map?.destroy();
@@ -3511,6 +3516,12 @@ export class WorldToolScene extends Phaser.Scene {
     this.drawProps();
 
     const cam = this.cameras.main;
+    if (keepView) {
+      // The level only got bigger; the limit follows it (minZoom reads the
+      // live bounds), so all that is needed is to keep the current zoom legal.
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom, this.minZoom(), 4));
+      return;
+    }
     cam.centerOn((width * ts.tileWidth) / 2, (height * ts.tileHeight) / 2);
     const fit = Math.min(
       (this.scale.width - 660) / (width * ts.tileWidth),
@@ -3544,7 +3555,8 @@ export class WorldToolScene extends Phaser.Scene {
    */
   private growMapFor(tx: number, ty: number): { dx: number; dy: number } {
     const map = this.map;
-    if (!map || !this.autoGrow) return { dx: 0, dy: 0 };
+    const ts = this.tileset;
+    if (!map || !ts || !this.autoGrow) return { dx: 0, dy: 0 };
     const margin = 1; // start growing one tile before the edge
     const addLeft = Math.max(0, margin - tx);
     const addTop = Math.max(0, margin - ty);
@@ -3569,7 +3581,12 @@ export class WorldToolScene extends Phaser.Scene {
       }
       return next;
     });
-    this.buildMap(width, height, shifted);
+    const cam = this.cameras.main;
+    const { scrollX, scrollY } = cam;
+    this.buildMap(width, height, shifted, true);
+    // Growing on the top or left shifts every existing cell; follow it, or
+    // the level appears to jump sideways under a stroke in progress.
+    cam.setScroll(scrollX + addLeft * ts.tileWidth, scrollY + addTop * ts.tileHeight);
     this.widthIn.value = String(width);
     this.heightIn.value = String(height);
     return { dx: addLeft, dy: addTop };
