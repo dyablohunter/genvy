@@ -5,7 +5,7 @@ this applies its lessons to tilesets and levels instead of rediscovering them.
 
 ## What World Maker is today (M1)
 
-One `gpt-image-2` call draws a **4×6 grid of 24 tiles** from a DeepSeek-planned
+One `gpt-image-2.5` call draws a **4×6 grid of 24 tiles** from a DeepSeek-planned
 subject list; the grid is cut into tiles, saved as a `tileset` asset, and
 painted onto a Phaser tilemap that saves as a `world`. It works, and it has
 exactly the failure modes the sprite pipeline already diagnosed.
@@ -27,7 +27,7 @@ exactly the failure modes the sprite pipeline already diagnosed.
 **W1 — Tile gate (deterministic, no GPU)** ← *starting here*
 `tileGate.ts` scores a cut tileset the way `animationGate` scores a clip:
 per-tile wrap-seam continuity, set-wide palette cohesion, fill, grid-line
-contamination, duplicates. Provider-agnostic — it runs on gpt-image-2 output
+contamination, duplicates. Provider-agnostic — it runs on gpt-image-2.5 output
 and local output alike, and its hints drive bounded retry.
 
 **W2 — Tile chain (the anchor chain, for terrain)**

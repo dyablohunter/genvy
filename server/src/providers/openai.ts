@@ -3,13 +3,13 @@ import type { ImageProvider, ImageGenerateRequest, ImageEditRequest } from './ty
 import { offlineError } from './types.js';
 
 /**
- * OpenAI gpt-image-2 (never gpt-image-1) — the reference provider the whole
+ * OpenAI gpt-image-2.5 (never gpt-image-1 or -2) — the reference provider the whole
  * M1 flow was proven on: native alpha via `background: 'transparent'`,
  * multi-reference edits with role annotations, moderation 422 handled by the
  * caller's sanitize-and-retry pass. Wraps services/openaiImage.ts unchanged.
  */
 /**
- * Published gpt-image-2 image prices, in CENTS per image, by canvas and
+ * Published gpt-image-2.5 image prices, in CENTS per image, by canvas and
  * quality. Square is not a discount on the tall/wide canvas — it costs MORE
  * at every tier — so this is a table, not a ratio applied to one row.
  *
@@ -27,7 +27,7 @@ export function createOpenAiProvider(apiKey: string): ImageProvider {
   const live = apiKey.length > 0;
   return {
     id: 'openai',
-    name: 'OpenAI gpt-image-2',
+    name: 'OpenAI gpt-image-2.5',
     live,
     capabilities: {
       generate: true,

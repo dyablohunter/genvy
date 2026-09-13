@@ -59,7 +59,7 @@ interface ImageProvider {
 }
 ```
 
-Selection: per-step configurable defaults (concepts→DeepSeek; anchors/sheets→gpt-image-2;
+Selection: per-step configurable defaults (concepts→DeepSeek; anchors/sheets→gpt-image-2.5;
 pixel-style animation→Retro Diffusion when key present; everything→local when enabled) with a
 per-request override in the UI. A provider registry reports which providers are LIVE based on
 `.env` keys / local service health, so the HUD can show LINK ONLINE/OFFLINE per provider.
@@ -67,7 +67,7 @@ per-request override in the UI. A provider registry reports which providers are 
 **API providers (BYO `.env` keys):**
 | Provider | Use | Notes |
 |---|---|---|
-| OpenAI **gpt-image-2** (never gpt-image-1) | anchors, one-shot idle/attack sheets, edits | native alpha; the chongdashu method is proven on this exact model family |
+| OpenAI **gpt-image-2.5** (never gpt-image-1 or -2) | anchors, one-shot idle/attack sheets, edits | native alpha; the chongdashu method is proven on this exact model family |
 | Retro Diffusion | pixel-style sprites ≤384px; **animation endpoint** (anchor + action → transparent spritesheet, ~$0.07–0.25) | palette locking, free pixel-fixer endpoint |
 | PixelLab | skeleton-based animation, 4/8-direction rotation | ≤128×128 animation cap — small-sprite tier only |
 | DeepSeek (existing) | concepts, layouts, prompt sanitize, QA feedback hints | |
@@ -104,7 +104,7 @@ Extend `SPRITE_CONCEPT_SYSTEM` output with: style contract selection, palette ro
 (so the anchor stage knows what to STRIP), and the animation plan (existing).
 
 ### C2. Anchor chain (NEW — the core fix)
-1. **Neutral south anchor**: one gpt-image-2 (or local) call producing **4 candidate variants**
+1. **Neutral south anchor**: one gpt-image-2.5 (or local) call producing **4 candidate variants**
    of the canonical neutral idle — facing camera, no weapons/props/effects, flat chroma
    background, "one logical 256×256 frame delivered at 1024". User picks one (existing
    variant-picker UX is reused). Prompt uses:
@@ -143,10 +143,10 @@ Extend `SPRITE_CONCEPT_SYSTEM` output with: style contract selection, palette ro
     colors in the character").
 
 **Background strategy (per provider — reconciles research vs as-built experience):**
-M1 experience showed gpt-image-2's native `background: transparent` beats magenta keying for
+M1 experience showed gpt-image-2.5's native `background: transparent` beats magenta keying for
 our flow (see `docs/original-plan-m1.md`, "What changed since"), while the research repos
 found other models ignore "transparent" or fake it. So:
-- **Native alpha** is the default for providers with `nativeAlpha: true` (gpt-image-2,
+- **Native alpha** is the default for providers with `nativeAlpha: true` (gpt-image-2.5,
   Retro Diffusion). Validate with the existing `hasTransparency()` check.
 - **Chroma workflow** (flat `#FF00FF` or auto-selected key + keying + despill) is MANDATORY
   for providers without real alpha (they draw literal checkerboards) and the automatic
@@ -159,7 +159,7 @@ found other models ignore "transparent" or fake it. So:
   1-2-1-2; mirror for the opposite direction. These cost $0.
 - **Provider routing**: pixel styles may route walk/idle/attack to Retro Diffusion's
   animation endpoint (anchor in → transparent sheet out); local route uses per-frame OpenPose
-  + IP-Adapter batch; default route is gpt-image-2 sheet generation.
+  + IP-Adapter batch; default route is gpt-image-2.5 sheet generation.
 - **(Experiment, later)** image-to-video walk cycles: i2v on the directional anchor →
   auto-detect one cycle → pick 8–12 evenly spaced frames ("you will never get walk cycles
   right with image generation alone").
@@ -215,7 +215,7 @@ once contact with the real providers proved them wrong — those are recorded he
 silently deleted, because the reasoning is the useful part.
 
 **P1 — Provider layer + prompt rewrite** ✅ DONE
-`ImageProvider` interface + registry (`server/src/providers/`), gpt-image-2 wrapped as the
+`ImageProvider` interface + registry (`server/src/providers/`), gpt-image-2.5 wrapped as the
 reference provider, Retro Diffusion added (v2 **async** API: submit → poll `task_id`; it
 reports `balance_cost`/`remaining_balance`, so its billing is exact rather than estimated).
 StyleContract schema + presets in `shared/`, all image prompts rewritten per E1.
@@ -275,7 +275,7 @@ i2v walk cycles; LLM judge gates; Scenario custom-style training; PixelLab skele
 `library/exports/` (PNG + genvy manifest with absolute frame rects and pivots + a
 Phaser/TexturePacker atlas + the neutral anchors + a `.zip` of all of it).
 *Tried and removed:* **pixel-grid reconstruction** — detecting a diffusion model's fake
-"pixel" cell and rebuilding at native resolution. It has no useful case: gpt-image-2 paints
+"pixel" cell and rebuilding at native resolution. It has no useful case: gpt-image-2.5 paints
 anti-aliased blobs with no recoverable grid (1% confidence on real art), and Retro Diffusion
 is already at native resolution, so reconstruction is a no-op. True pixel art comes from a
 provider that draws real pixels, not from post-hoc analysis.
@@ -287,7 +287,7 @@ session can implement without re-research. Adapt wording to Genvy's voice, keep 
 
 ### E1. Prompt scaffolds
 
-**Role annotation (prefix every reference image, the load-bearing trick for gpt-image-2-class
+**Role annotation (prefix every reference image, the load-bearing trick for gpt-image-2.5-class
 models):**
 ```
 Image 1 role: identity anchor. Preserve this exact character identity, detail level, face,
@@ -464,7 +464,7 @@ re-run the clip against the new anchor.
 
 ### E4. Provider cheat sheet
 
-- **gpt-image-2** (current, `/v1/images/generations` + `/edits`): native alpha via
+- **gpt-image-2.5** (current, `/v1/images/generations` + `/edits`): native alpha via
   `background: 'transparent', output_format: 'png'`; multi-reference edits work with role
   annotations; moderation 422 → sanitize-and-retry (existing).
 - **Retro Diffusion** (`POST https://api.retrodiffusion.ai/v1/inferences`, header
@@ -492,12 +492,12 @@ re-run the clip against the new anchor.
 
 > Read `docs/sprite-pipeline-v2.md` fully (including the appendix) and
 > `docs/original-plan-m1.md` ("What changed since" section especially). Then implement
-> Phase P1: extract the `ImageProvider` interface, wrap the existing gpt-image-2 code as the
+> Phase P1: extract the `ImageProvider` interface, wrap the existing gpt-image-2.5 code as the
 > first provider, add Retro Diffusion as a second provider gated by `.env` keys (see
 > `.env.example`), add the `StyleContract` schema + presets to `shared/`, and rewrite the
 > image prompts in `server/src/prompts/` using the scaffolds in appendix E1. Keep every
-> existing behavior working (variants flow, sessions, moderation retry). gpt-image-2, never
-> gpt-image-1. Ask before any credit-spending test; use `npm test` + fixtures otherwise.
+> existing behavior working (variants flow, sessions, moderation retry). gpt-image-2.5, never
+> gpt-image-1 or -2. Ask before any credit-spending test; use `npm test` + fixtures otherwise.
 
 ## F. Research source map
 

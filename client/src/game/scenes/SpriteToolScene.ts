@@ -355,7 +355,7 @@ export class SpriteToolScene extends Phaser.Scene {
   private animSizeField: HTMLElement | null = null;
   /** Re-syncs the forge button's promised count after async provider loads. */
   private updateForgeLabel: (() => void) | null = null;
-  // Quality tier for providers that price by it (gpt-image-2). LOW is the
+  // Quality tier for providers that price by it (gpt-image-2.5). LOW is the
   // default on purpose — the higher tiers cost 4x/15x per image.
   private genQualitySel = document.createElement('select');
   private genQualityField: HTMLElement | null = null;
@@ -643,7 +643,7 @@ export class SpriteToolScene extends Phaser.Scene {
    * panels each show a select, but they are never both visible — and anchor
    * work reads the blueprint's. Letting them diverge meant a user who set
    * LOCAL on the visible panel had anchor edits billed to the hidden panel's
-   * gpt-image-2. Mirroring a change into the other select (when it offers
+   * gpt-image-2.5. Mirroring a change into the other select (when it offers
    * that provider) keeps "what I picked" and "what runs" identical.
    */
   private syncProviderSelection(from: HTMLSelectElement, to: HTMLSelectElement) {
@@ -855,7 +855,7 @@ export class SpriteToolScene extends Phaser.Scene {
    * Guard every anchor edit: the CHOSEN provider does the work or nothing
    * does. Silently falling back to the paid default spends money the user
    * never agreed to spend (it happened: local picks were billed to
-   * gpt-image-2), so an incapable choice is an error, not a substitution.
+   * gpt-image-2.5), so an incapable choice is an error, not a substitution.
    * Returns true when the caller may proceed.
    */
   private canEditHere(providerId?: string): boolean {
@@ -897,11 +897,11 @@ export class SpriteToolScene extends Phaser.Scene {
   /**
    * The name a busy label should call this provider — stage text must say
    * what is working and whether it costs anything (see Progress feedback).
-   * `undefined` means the server default, which is gpt-image-2.
+   * `undefined` means the server default, which is gpt-image-2.5.
    */
   private providerTag(id?: string, family?: string): string {
     const p = id ? this.providers.find((x) => x.id === id) : undefined;
-    if (!p || p.id === 'openai') return 'GPT-IMAGE-2';
+    if (!p || p.id === 'openai') return 'GPT-IMAGE-2.5';
     // Name the MODEL that will actually run, not just the provider — the
     // family can differ from the picker's selection (capability routing).
     const model = family ? p.models?.find((m) => m.id === family) : undefined;
@@ -1224,7 +1224,7 @@ export class SpriteToolScene extends Phaser.Scene {
           'success',
         );
       }, {
-        // Per provider AND count: one gpt-image-2 grid call vs N composed
+        // Per provider AND count: one gpt-image-2.5 grid call vs N composed
         // local renders differ by an order of magnitude — never share averages.
         key: `anchor:candidates:${this.genProviderSel.value || 'openai'}:${count}:${this.renderSizeFor(this.genProviderSel, this.genSizeSel) ?? 'std'}`,
         fallbackMs: 12000 * count,
@@ -3139,7 +3139,7 @@ export class SpriteToolScene extends Phaser.Scene {
         );
       }
       },
-      // Keyed by provider + frame count: gpt-image-2 draws one sheet, Retro
+      // Keyed by provider + frame count: gpt-image-2.5 draws one sheet, Retro
       // Diffusion queues a dedicated render, local ComfyUI renders per frame —
       // their durations have nothing in common, so they must not share a
       // learned average (progress-feedback: per-provider buckets).

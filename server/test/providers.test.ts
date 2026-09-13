@@ -59,7 +59,7 @@ describe('provider registry', () => {
     expect(local.capabilities.generate).toBe(true);
   });
 
-  it('only gpt-image-2 claims one-call candidate grids; others get server-side composition', () => {
+  it('only gpt-image-2.5 claims one-call candidate grids; others get server-side composition', () => {
     const reg = new ProviderRegistry(emptyCfg);
     // Verified live: one "2x2 grid" ask to local SDXL produced five strips
     // of noise; Retro Diffusion draws one sprite per call by design.
@@ -85,7 +85,7 @@ describe('provider registry', () => {
     }
   });
 
-  it('routes animations by capability: retro animates, gpt-image-2 edits', () => {
+  it('routes animations by capability: retro animates, gpt-image-2.5 edits', () => {
     const reg = new ProviderRegistry(emptyCfg);
     const retro = reg.get('retrodiffusion')!;
     // The animation route prefers animate() when a provider owns the endpoint.
@@ -355,12 +355,12 @@ describe('canvasFor', () => {
 });
 
 /**
- * gpt-image-2 prices by canvas AND quality, and a square canvas is dearer
+ * gpt-image-2.5 prices by canvas AND quality, and a square canvas is dearer
  * than the tall/wide one at every tier — the opposite of what a pixel-count
  * guess predicts. Estimating it wrong makes the header spend contradict the
  * button that spent it, so the published table is pinned here.
  */
-describe('gpt-image-2 cost by canvas', () => {
+describe('gpt-image-2.5 cost by canvas', () => {
   const openai = createOpenAiProvider('test-key').capabilities.costEstimate;
   const req = (orientation: 'square' | 'landscape' | 'portrait', quality: 'low' | 'medium' | 'high') =>
     ({ prompt: 'x', orientation, quality }) as Parameters<typeof openai>[0];

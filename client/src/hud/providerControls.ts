@@ -9,7 +9,7 @@ import { UISound } from './UISound.js';
  * It exists because these controls are not decorative: they decide which
  * provider spends money, which local family can actually do the job, and how
  * long a render takes. Duplicating that logic per tool is how a hidden select
- * ends up silently billing gpt-image-2 (it happened) — one implementation
+ * ends up silently billing gpt-image-2.5 (it happened) — one implementation
  * keeps every tool honest.
  */
 
@@ -32,7 +32,7 @@ const SIZE_LABELS: Record<number, string> = {
 };
 
 /**
- * Published gpt-image-2 prices in dollars per image, by canvas and quality.
+ * Published gpt-image-2.5 prices in dollars per image, by canvas and quality.
  * Square is NOT cheaper than the tall/wide canvas — it costs more at every
  * tier — so this is a table rather than a ratio off one row. It mirrors
  * OPENAI_IMAGE_PRICE on the server: the preview must agree with what is
@@ -286,7 +286,7 @@ export class ProviderControls {
   /** Name of the model/provider that will run, for busy labels. */
   tag(): string {
     const p = this.current();
-    if (!p || p.id === 'openai') return 'GPT-IMAGE-2';
+    if (!p || p.id === 'openai') return 'GPT-IMAGE-2.5';
     const family = this.modelFamily();
     const model = family ? p.models?.find((m) => m.id === family) : undefined;
     const name = model ? model.label.toUpperCase() : p.name.toUpperCase();

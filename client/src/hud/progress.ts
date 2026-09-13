@@ -63,7 +63,7 @@ export function aiImageBucket(body: { kind?: string; frames?: number; provider?:
   label: string;
 } {
   const kind = body.kind ?? 'raw';
-  const provider = (body.provider ?? 'openai').toUpperCase().replace('OPENAI', 'GPT-IMAGE-2');
+  const provider = (body.provider ?? 'openai').toUpperCase().replace('OPENAI', 'GPT-IMAGE-2.5');
   switch (kind) {
     case 'anchor':
     case 'variants':

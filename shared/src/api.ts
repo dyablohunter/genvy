@@ -109,7 +109,7 @@ export interface AiImageRequest {
   variantCount?: number;
   /** Square render-canvas side for providers with a choosable one (local): speed<->detail dial, NOT the sprite's output size. */
   renderSize?: number;
-  /** Quality tier for providers that price by it (gpt-image-2: low/medium/high — cost scales hard). */
+  /** Quality tier for providers that price by it (gpt-image-2.5: low/medium/high — cost scales hard). */
   quality?: 'low' | 'medium' | 'high';
   /** StyleContract preset id — its prompt/negative blocks are appended server-side. */
   styleId?: string;

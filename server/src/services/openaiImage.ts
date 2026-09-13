@@ -65,7 +65,7 @@ export async function generateImage(
 /**
  * Image edit with reference image(s) — the key to character consistency:
  * the model redraws THIS character instead of reinventing it per prompt.
- * Multiple references map to gpt-image-2's `image[]` array in prompt order
+ * Multiple references map to gpt-image-2.5's `image[]` array in prompt order
  * ("Image 1", "Image 2", ... for role annotations).
  */
 export async function editImage(

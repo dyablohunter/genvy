@@ -131,7 +131,7 @@ evidence noted beside it:
 | 4 | magenta bled into the palette; literal border props | background described as plain WHITE, no color names; never say "frame"/"animation" in prompts — SDXL draws them |
 | 5 | narrow passing poses lost composition to IP-Adapter | ControlNet 1.15 > IP 0.6 so pose outranks identity |
 | 6 | at IP 0.6 identity goes abstract at 512px on SDXL base | the 4GB floor: needs 768px + a style LoRA / better checkpoint (16GB tier) |
-| 7 | variants: a "2x2 grid" ask produced strips of noise; the prose prompt's "Negative constraints" list produced sheets of themed panels | `gridSheets` capability — the route renders 4 singles and composes; and **CLIP does not understand negation**: prompts written for instruction-following models (gpt-image-2) embed "no grid lines / no comic panels" as positive content, so grid-incapable providers get MINIMAL single-figure prompts (`single: true`) and prohibitions live only on the real negative channel |
+| 7 | variants: a "2x2 grid" ask produced strips of noise; the prose prompt's "Negative constraints" list produced sheets of themed panels | `gridSheets` capability — the route renders 4 singles and composes; and **CLIP does not understand negation**: prompts written for instruction-following models (gpt-image-2.5) embed "no grid lines / no comic panels" as positive content, so grid-incapable providers get MINIMAL single-figure prompts (`single: true`) and prohibitions live only on the real negative channel |
 
 Open tuning items for a real GPU: per-style checkpoints/LoRAs (Pixel Art XL),
 768–1024 renders, possibly a two-pass flow (pose-locked render, then img2img

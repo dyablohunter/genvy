@@ -84,7 +84,7 @@ export interface ProviderCapabilities {
   /** purpose-built animation endpoint (Retro Diffusion, PixelLab) */
   animation: boolean;
   /**
-   * Can draw a multi-candidate 2x2 grid in ONE call (gpt-image-2). Providers
+   * Can draw a multi-candidate 2x2 grid in ONE call (gpt-image-2.5). Providers
    * without it get variants/anchors as four single-figure renders the route
    * composes itself — SDXL draws layout instructions as noise, not grids.
    */

@@ -11,7 +11,7 @@ import { cellHash } from './imagePipeline.js';
  * measures it deterministically, scores it, and hands back hints the retry
  * loop can feed into the next attempt.
  *
- * Provider-agnostic on purpose: it runs on gpt-image-2 sheets and locally
+ * Provider-agnostic on purpose: it runs on gpt-image-2.5 sheets and locally
  * composed ones alike.
  */
 

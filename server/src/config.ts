@@ -14,7 +14,7 @@ export const config = {
   openaiApiKey: (process.env.OPENAI_API_KEY ?? '').replace(/^"|"$/g, ''),
   deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
   deepseekModel: process.env.DEEPSEEK_MODEL ?? 'deepseek-chat',
-  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2',
+  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2.5',
   // Sprite Pipeline v2 — additional BYO-key providers (missing key = LINK OFFLINE).
   retroDiffusionApiKey: (process.env.RETRODIFFUSION_API_KEY ?? '').replace(/^"|"$/g, ''),
   // P6 — the local-inference service (free, optional; offline until its /health answers).

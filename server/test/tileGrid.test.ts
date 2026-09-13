@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as pipe from '../src/services/imagePipeline.js';
 
 /**
- * The tile sheets gpt-image-2 actually returns carry the right NUMBER of
+ * The tile sheets gpt-image-2.5 actually returns carry the right NUMBER of
  * cells on the wrong lattice: measured sheets drift 20-30px per row and the
  * drift accumulates downward, so an even `height / rows` cut leaves row one
  * perfect and row six two halves of its neighbours. The model does separate

@@ -85,7 +85,7 @@ interface AiImageBody {
   outName?: string;
   styleHint?: string;
   pose?: string;
-  /** Image provider id; default 'openai' (gpt-image-2) — the proven M1 path. */
+  /** Image provider id; default 'openai' (gpt-image-2.5) — the proven M1 path. */
   provider?: string;
   /** Model family for multi-model providers (the local service); others ignore it. */
   modelFamily?: string;

@@ -3371,7 +3371,7 @@ export class WorldToolScene extends Phaser.Scene {
       }
       await this.busy(statusHost, 'FORGING TILES · THIS TAKES A MINUTE...', async () => {
         UISound.play('generate');
-        HudShell.setBusyLabel('GPT-IMAGE-2 · DRAWING THE 4x6 TILE GRID...');
+        HudShell.setBusyLabel('GPT-IMAGE-2.5 · DRAWING THE 4x6 TILE GRID...');
         const subjects = this.concept!.tileNames.length
           ? this.concept!.tileNames.join(', ')
           : this.concept!.imagePrompt;

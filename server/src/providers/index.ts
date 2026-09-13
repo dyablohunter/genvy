@@ -50,7 +50,7 @@ export class ProviderRegistry {
   }
 
   /**
-   * Per-step default (docs §A): anchors/sheets -> gpt-image-2; pixel-style
+   * Per-step default (docs §A): anchors/sheets -> gpt-image-2.5; pixel-style
    * animation -> Retro Diffusion when its key is present. Advisory only in P1 —
    * routes honor an explicit `provider` override and otherwise stay on
    * 'openai' so existing flows keep their exact behavior and cost.

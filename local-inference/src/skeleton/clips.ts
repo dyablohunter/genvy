@@ -9,7 +9,7 @@ import { KP, KEYPOINT_COUNT, MIRROR_INDEX } from './coco.js';
  *
  * All positions are normalized to a square canvas: x,y in [0,1], y down.
  * Looping clips (walk/run/idle) sample t = i/N so frame N would land exactly
- * on frame 0 — the loop closure the prompts used to beg gpt-image-2 for.
+ * on frame 0 — the loop closure the prompts used to beg gpt-image-2.5 for.
  * One-shot clips (jump/attack) sample u = i/(N-1) to hit both endpoints.
  */
 

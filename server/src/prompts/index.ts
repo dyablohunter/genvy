@@ -179,7 +179,7 @@ export const TOOL_SYSTEM_PROMPTS: Record<string, string> = {
 
 /**
  * Background strategy per provider (docs §C3): native alpha is the default for
- * providers that truly support it (gpt-image-2, Retro Diffusion); the chroma
+ * providers that truly support it (gpt-image-2.5, Retro Diffusion); the chroma
  * workflow is MANDATORY for providers without real alpha (they draw literal
  * checkerboards) and the fallback retry when native alpha comes back dirty.
  */
@@ -220,7 +220,7 @@ export function negativeFailureModes(plural = 'characters', noun = 'character'):
 
 /**
  * Role annotation for reference images — the load-bearing trick for
- * gpt-image-2-class models: each attached image gets an explicit role so the
+ * gpt-image-2.5-class models: each attached image gets an explicit role so the
  * model preserves identity from one and copies nothing from the others.
  */
 export function referenceRoleBlock(roles: ('identity' | 'layout')[]): string {

@@ -18,7 +18,7 @@ Every AI request — image, video, or text; API provider or local inference — 
    full on completion (`HudShell.showBusy(label, expectedMs)`).
 2. **Update its stage text at every step** via `HudShell.setBusyLabel()`, in the
    form `"<i>/<n> <WHAT IS WORKING> · <WHAT IT IS DOING>"` — name the model or
-   service (`GPT-IMAGE-2`, `DEEPSEEK`, `RETRO DIFFUSION`, `LOCAL COMFYUI`), and
+   service (`GPT-IMAGE-2.5`, `DEEPSEEK`, `RETRO DIFFUSION`, `LOCAL COMFYUI`), and
    say what it is producing in the user's terms. Free local steps get their own
    numbered stage; mark them so the user knows they cost nothing.
 3. **Use a duration bucket keyed by what drives the duration** — operation plus
@@ -61,7 +61,7 @@ Ideas worth weighing, roughly by value:
   attempt the retry loop is on, that a moderation retry fired, that the gate is
   running. Stream real stage events (SSE on `/api/ai/image`) instead of the
   client guessing stage boundaries. This is the single biggest accuracy win.
-- **Per-provider, per-model buckets.** gpt-image-2 and Retro Diffusion have very
+- **Per-provider, per-model buckets.** gpt-image-2.5 and Retro Diffusion have very
   different latencies (RD queues jobs and can run for minutes); so do local GPU
   tiers. Key buckets by provider and model, not just operation shape.
 - **Retry-aware estimates.** A gated animation may run 1–3 attempts. Estimate

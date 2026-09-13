@@ -213,7 +213,7 @@ export function createRetroDiffusionProvider(apiKey: string): ImageProvider {
         throw providerError(
           504,
           `Retro Diffusion job ${taskId} is still running after ${JOB_DEADLINE_MS / 60000} minutes. ` +
-            'It stays retrievable on their dashboard for 24h; try fewer frames, or forge this clip with gpt-image-2.',
+            'It stays retrievable on their dashboard for 24h; try fewer frames, or forge this clip with gpt-image-2.5.',
         );
       }
     }
