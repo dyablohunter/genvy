@@ -482,13 +482,10 @@ class HudShellImpl {
       if (!tool.ready) btn.classList.add('offline');
       if (this.invTool === tool.id) btn.classList.add('active');
       btn.title = `${tool.name} — ${tool.blurb}`;
-      // Twenty named buttons do not fit a 1600px row, and the one that got
-      // pushed off the end was Game Assembler — the shelf of finished games.
-      // Tools that are online carry their name; the rest are their icon, and
-      // say who they are on hover.
-      btn.innerHTML =
-        `<span class="g-inv-tool-icon">${tool.icon}</span>` +
-        (tool.ready ? `<span class="g-inv-tool-name">${escapeHtml(tool.name)}</span>` : '');
+      // Icons only: twenty named buttons do not fit a 1600px row, and naming
+      // just the two that are online made the roster read as two buttons and
+      // eighteen decorations. Every tool is one square glyph, named on hover.
+      btn.innerHTML = `<span class="g-inv-tool-icon">${tool.icon}</span>`;
       const badge = document.createElement('span');
       badge.className = 'g-inv-count';
       // Sprites are counted from the workspace list rather than the index;
@@ -733,7 +730,16 @@ class HudShellImpl {
       Math.max(margin, rect.left + rect.width / 2 - width / 2),
       Math.max(margin, window.innerWidth - width - margin),
     );
-    const top = rect.bottom + 6;
+    // Vertically the card hangs off the BAND, not off the item: it reads as a
+    // tab pulled out of the shelf, and a shelf wrapped to a second row would
+    // otherwise open the card inside the band.
+    //
+    // It starts ON the band's bottom border so its background-coloured top
+    // edge paints over that line: the band and the card become one surface
+    // for the card's width, and the line carries on either side of it. Left
+    // as a real 2px gap, the page behind showed through the seam.
+    const band = this.drawer?.getBoundingClientRect();
+    const top = band ? band.bottom - 1 : rect.bottom + 2;
     detail.style.left = `${Math.round(left)}px`;
     detail.style.right = 'auto';
     detail.style.top = `${Math.round(top)}px`;
