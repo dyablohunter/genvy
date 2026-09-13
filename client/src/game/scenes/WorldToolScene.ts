@@ -114,6 +114,10 @@ export class WorldToolScene extends Phaser.Scene {
   private warnedNoZones = false;
   /** Wide brush behaviour in tile modes: repeat the tile, or stretch one. */
   private stretchTiles = false;
+  /** A blob smaller than this is a dab, not a surface worth labelling. */
+  private static readonly LABEL_MIN_CELLS = 6;
+  /** At most this many readouts: past that they hide the artwork. */
+  private static readonly LABEL_MAX = 24;
   private static readonly UNDO_LIMIT = 40;
   private conceptFields: HTMLElement | null = null;
   private editTextsBtn: GenvyButton | null = null;
@@ -2378,26 +2382,109 @@ export class WorldToolScene extends Phaser.Scene {
     this.labelZoom = zoom;
     for (const shape of this.shapes) {
       const kind = SCENE_MASK_KINDS.find((k) => k.id === shape.kind);
-      if (!kind) continue;
-      const byKind = Object.fromEntries(this.cellFriction);
-      const explicit = shape.friction !== undefined || byKind[String(shape.kind)] !== undefined;
-      const value = surfaceFriction(shape.kind, byKind, shape.friction);
-      const at = this.shapeCentre(shape);
-      if (!at) continue;
-      const text = this.add
-        .text(at.x, at.y, String(Number(value.toFixed(2))), {
-          fontFamily: 'monospace',
-          fontSize: '11px',
-          color: explicit ? kind.color : '#8aa0b8',
-          backgroundColor: 'rgba(0,0,0,0.55)',
-          padding: { x: 3, y: 1 },
-        })
-        .setOrigin(0.5)
-        .setDepth(22)
-        .setScale(1 / zoom)
-        .setVisible(show);
-      this.frictionLabels.push(text);
+      const at = kind ? this.shapeCentre(shape) : null;
+      if (!kind || !at) continue;
+      this.frictionLabels.push(
+        this.frictionLabel(at.x, at.y, shape.kind, kind.color, zoom, show, shape.friction),
+      );
     }
+    for (const region of this.maskRegions()) {
+      const kind = SCENE_MASK_KINDS.find((k) => k.id === region.kind);
+      if (!kind) continue;
+      this.frictionLabels.push(this.frictionLabel(region.x, region.y, region.kind, kind.color, zoom, show));
+    }
+  }
+
+  /** One readout, styled by whether the value was chosen or inherited. */
+  private frictionLabel(
+    x: number,
+    y: number,
+    kindId: number,
+    color: string,
+    zoom: number,
+    show: boolean,
+    own?: number,
+  ) {
+    const byKind = Object.fromEntries(this.cellFriction);
+    const explicit = own !== undefined || byKind[String(kindId)] !== undefined;
+    const value = surfaceFriction(kindId, byKind, own);
+    return this.add
+      .text(x, y, String(Number(value.toFixed(2))), {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: explicit ? color : '#8aa0b8',
+        backgroundColor: 'rgba(0,0,0,0.55)',
+        padding: { x: 3, y: 1 },
+      })
+      .setOrigin(0.5)
+      .setDepth(22)
+      .setScale(1 / zoom)
+      .setVisible(show);
+  }
+
+  /**
+   * The painted BLOBS of the cell mask, one entry per connected region, with
+   * a world point to label it at.
+   *
+   * Cells carry friction too (per kind, on the level), but a cell is one
+   * number in a grid — there is nothing to hang a readout off. So the regions
+   * are found the same way a paint bucket finds them, and each gets one
+   * label at its centre of mass. Tiny dabs are skipped and the count is
+   * capped: a readout per blob is information, forty of them is a wall of
+   * text over the artwork.
+   */
+  private maskRegions(): { kind: number; x: number; y: number; cells: number }[] {
+    const rows = this.mask.length;
+    if (rows === 0) return [];
+    const cols = this.mask[0]?.length ?? 0;
+    const seen = new Uint8Array(rows * cols);
+    const found: { kind: number; x: number; y: number; cells: number }[] = [];
+    const stack: number[] = [];
+    for (let y0 = 0; y0 < rows; y0++) {
+      const row = this.mask[y0]!;
+      for (let x0 = 0; x0 < cols; x0++) {
+        const kind = row[x0] ?? 0;
+        if (kind === 0 || seen[y0 * cols + x0]) continue;
+        // Flood this blob, accumulating its centre of mass as we go.
+        let sx = 0;
+        let sy = 0;
+        let n = 0;
+        stack.length = 0;
+        stack.push(y0 * cols + x0);
+        seen[y0 * cols + x0] = 1;
+        while (stack.length > 0) {
+          const at = stack.pop()!;
+          const y = Math.floor(at / cols);
+          const x = at - y * cols;
+          sx += x;
+          sy += y;
+          n++;
+          for (const [dx, dy] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+          ] as const) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+            const i = ny * cols + nx;
+            if (seen[i] || (this.mask[ny]?.[nx] ?? 0) !== kind) continue;
+            seen[i] = 1;
+            stack.push(i);
+          }
+        }
+        if (n < WorldToolScene.LABEL_MIN_CELLS) continue;
+        found.push({
+          kind,
+          x: (sx / n + 0.5) * this.maskCell,
+          y: (sy / n + 0.5) * this.maskCell,
+          cells: n,
+        });
+      }
+    }
+    // The biggest blobs are the ones worth naming.
+    return found.sort((a, b) => b.cells - a.cells).slice(0, WorldToolScene.LABEL_MAX);
   }
 
   /** Where a shape's readout goes: its centroid, or a circle's centre. */
@@ -4243,10 +4330,15 @@ export class WorldToolScene extends Phaser.Scene {
     });
     this.input.on('pointerup', () => {
       if (this.crop) this.crop.start = null;
+      const wasPainting = this.painting;
       this.painting = false;
       this.lastPropBlock = null;
       this.lastMaskCell = null;
       this.strokeOrigin = null;
+      // Readouts follow the cells at the END of a stroke, not during it:
+      // finding the blobs and rebuilding the labels per dab would be work
+      // done hundreds of times to show the same numbers.
+      if (wasPainting && this.paintingZones) this.drawFrictionLabels();
       if (this.shapeDrag) {
         const shape = this.dragToShape();
         this.shapeDrag = null;
