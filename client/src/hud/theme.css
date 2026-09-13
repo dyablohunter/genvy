@@ -460,6 +460,10 @@ genvy-button[data-off] button {
   align-items: center;
   gap: 18px;
   padding: 0 18px;
+  /* Nothing in a 44px bar may wrap: at 1366px COMMAND CENTER folded onto a
+     second line and was clipped by the bar's own height, which reads exactly
+     like the back button not being there at all. */
+  white-space: nowrap;
   background: linear-gradient(180deg, rgba(6, 12, 24, 0.92), rgba(6, 12, 24, 0.55) 80%, transparent);
   border-bottom: 1px solid var(--hud-line-dim);
   font-family: var(--font-display);
@@ -498,7 +502,21 @@ genvy-button[data-off] button {
 }
 
 #genvy-topbar .spacer {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The navigation and the identity never give ground; the SPEND readout is
+   the elastic part of the bar. Before this every child shrank equally, so a
+   1366px window squeezed a 194px back button down to 144px and a 1152px one
+   pushed INVENTORY clean off the right edge. */
+#genvy-topbar > .logo,
+#genvy-topbar > .wipe-btn,
+#genvy-topbar > .status,
+#genvy-topbar > .forge-count,
+#genvy-topbar > .back-btn,
+#genvy-topbar > .inv-btn {
+  flex: 0 0 auto;
 }
 
 /* Spend readout: plain text, no button chrome — labels dim, values colored. */
@@ -506,6 +524,10 @@ genvy-button[data-off] button {
   display: flex;
   align-items: baseline;
   gap: 16px;
+  /* Clips from the right rather than crushing the controls beside it. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 
 #genvy-topbar .g-spend-item {

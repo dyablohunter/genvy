@@ -539,7 +539,10 @@ class HudShellImpl {
       icon.title = `${entry.name} · ${entry.type.toUpperCase()}`;
       if (entry.thumbnail) {
         const img = document.createElement('img');
-        img.src = `/library/files/${entry.thumbnail}`;
+        // Versioned by the asset's own updatedAt: a re-paint rewrites
+        // thumb.png at the SAME path, and the browser happily served the
+        // picture the asset had when it was first saved.
+        img.src = `/library/files/${entry.thumbnail}?v=${entry.updatedAt}`;
         img.loading = 'lazy';
         img.decoding = 'async';
         icon.appendChild(img);
@@ -964,12 +967,16 @@ class HudShellImpl {
       // Show the 64px icon at once — it is already cached — then swap in a
       // preview cut for THIS panel's width. The icon blown up to 300px is
       // the blur; a 384px cut is sharp even on a HiDPI screen.
-      img.src = `/library/files/${entry.thumbnail}`;
+      img.src = `/library/files/${entry.thumbnail}?v=${entry.updatedAt}`;
       preview.appendChild(img);
       void api
         .assetPreview(entry.id, 384)
         .then(({ preview: file }) => {
-          if (this.actionRowFor === entry.id) img.src = `/library/files/${file}`;
+          // Same path every time it is re-cut, so it needs the same version
+          // stamp as the icon or the card shows a stale preview.
+          if (this.actionRowFor === entry.id) {
+            img.src = `/library/files/${file}?v=${entry.updatedAt}`;
+          }
         })
         .catch(() => {
           // No bigger source than the icon; the icon is already showing.

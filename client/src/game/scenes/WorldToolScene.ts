@@ -13,6 +13,7 @@ import {
   pointInShape,
   fillMaskPolygon,
   sceneSegments,
+  defaultFriction,
   type SceneShape,
   type SceneSegment,
   type Character,
@@ -204,6 +205,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.maskVisible = visible;
     this.maskGfx?.setVisible(this.sceneActive && visible);
     this.shapeGfx?.setVisible(this.sceneActive && visible);
+    for (const label of this.frictionLabels) label.setVisible(this.sceneActive && visible);
     if (visible) this.overlayBtn?.removeAttribute('data-off');
     else this.overlayBtn?.setAttribute('data-off', '');
     this.playtestMask?.classList.toggle('off', !visible);
@@ -265,6 +267,10 @@ export class WorldToolScene extends Phaser.Scene {
   /** Vector collision shapes on the open scene. */
   private shapes: SceneShape[] = [];
   private shapeGfx: Phaser.GameObjects.Graphics | null = null;
+  /** One friction readout per shape; see drawShapes. */
+  private frictionLabels: Phaser.GameObjects.Text[] = [];
+  /** Last zoom the labels were sized for, so they stay screen-constant. */
+  private labelZoom = 0;
   /**
    * Which way the triangle tool points. Set explicitly by the arrow keys —
    * inferring it from the drag direction made placing a ramp finicky, because
@@ -421,6 +427,13 @@ export class WorldToolScene extends Phaser.Scene {
 
   update(_time: number, delta: number) {
     this.edgePan(delta);
+    // The readouts are world objects, so they must be unscaled by the camera
+    // to stay the same size on screen as it zooms.
+    const zoom = this.cameras.main.zoom;
+    if (this.frictionLabels.length > 0 && zoom !== this.labelZoom) {
+      this.labelZoom = zoom;
+      for (const label of this.frictionLabels) label.setScale(1 / zoom);
+    }
     if (!this.dummy?.active) return;
     this.dummy.update(delta);
     // The playtest camera IS the figure's position, in every mode: a
@@ -890,6 +903,44 @@ export class WorldToolScene extends Phaser.Scene {
    * edge — the standard map-editor autoscroll, so a stroke or a shape can
    * keep going past the visible edge without letting go of the tool.
    */
+  /**
+   * The canvas edges the POINTER can actually reach. The canvas fills the
+   * viewport, but HUD chrome is painted on top of it: the header owns the
+   * first 45px, so the cursor could never come within the 5px margin of the
+   * canvas's own top edge and panning up simply never fired. Measure the real
+   * bottom (and inner sides) of whatever overlays it — a client rect includes
+   * borders whatever the box-sizing — and treat that as the edge.
+   *
+   * A dock only blocks the rows it actually covers, so its span is checked
+   * against the pointer: below a short panel, the true edge is reachable and
+   * is the one that counts.
+   */
+  private visibleCanvasEdges(p: { x: number; y: number }) {
+    const rect = this.game.canvas.getBoundingClientRect();
+    const edge = { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+    const seen = (sel: string) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      return el && el.getClientRects().length > 0 ? el.getBoundingClientRect() : null;
+    };
+    // Full-width chrome hanging from the top.
+    for (const sel of ['#genvy-topbar', '#collection-drawer']) {
+      const r = seen(sel);
+      if (r && r.bottom > edge.top) edge.top = r.bottom;
+    }
+    // The side docks, but only across the rows they cover.
+    for (const [sel, side] of [
+      ['.g-dock-left', 'left'],
+      ['.g-dock-right', 'right'],
+    ] as const) {
+      const r = seen(sel);
+      if (!r || r.width === 0) continue;
+      if (p.y < r.top || p.y > r.bottom) continue;
+      if (side === 'left') edge.left = Math.max(edge.left, r.right);
+      else edge.right = Math.min(edge.right, r.left);
+    }
+    return edge;
+  }
+
   private edgePan(deltaMs: number) {
     const p = this.edgePointer;
     // An unfocused tab must not keep moving the level. The pointer's last
@@ -905,10 +956,10 @@ export class WorldToolScene extends Phaser.Scene {
     // Not while something else owns the camera: the pan grab, or the dummy's
     // follow — autoscroll under those reads as the view running away.
     if (!p || !p.overCanvas || this.spacePanning || this.dummy?.active) return;
-    const rect = this.game.canvas.getBoundingClientRect();
+    const edge = this.visibleCanvasEdges(p);
     const margin = 5; // CSS px, as specified
-    const dx = p.x - rect.left < margin ? -1 : rect.right - p.x < margin ? 1 : 0;
-    const dy = p.y - rect.top < margin ? -1 : rect.bottom - p.y < margin ? 1 : 0;
+    const dx = p.x - edge.left < margin ? -1 : edge.right - p.x < margin ? 1 : 0;
+    const dy = p.y - edge.top < margin ? -1 : edge.bottom - p.y < margin ? 1 : 0;
     if (dx === 0 && dy === 0) return;
     const cam = this.cameras.main;
     // Slow and steady, in SCREEN terms: ~260 CSS px/s whatever the zoom.
@@ -1118,6 +1169,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.penPoints = [];
     this.shapes = [];
     this.shapeGfx = null;
+    this.frictionLabels = [];
     this.shapeDrag = null;
     this.spacePanning = false;
     this.shiftKey = null;
@@ -1295,7 +1347,11 @@ export class WorldToolScene extends Phaser.Scene {
     penButtons.get('freehand')?.setAttribute('variant', 'accent');
 
     const eraseBtn = document.createElement('genvy-button') as GenvyButton;
-    eraseBtn.setAttribute('label', 'ERASER');
+    // A square glyph like the tool row above it, so CLEAR ALL can have the
+    // rest of the line instead of the two stacking into two rows.
+    eraseBtn.classList.add('g-icon');
+    eraseBtn.setAttribute('label', '⌫');
+    eraseBtn.title = 'ERASER — paints cells empty, or deletes the shape you click';
     eraseBtn.onClick(() => {
       UISound.play('click');
       this.tool = this.tool === 'erase' ? 'brush' : 'erase';
@@ -1333,8 +1389,9 @@ export class WorldToolScene extends Phaser.Scene {
 
     const toolRow = document.createElement('div');
     toolRow.className = 'g-row';
-    eraseBtn.style.flex = '1 1 100%';
-    toolRow.appendChild(eraseBtn);
+    clearBtn.style.flex = '1 1 auto';
+    clearBtn.style.minWidth = '0';
+    toolRow.append(eraseBtn, clearBtn);
 
 
     const backBtn = document.createElement('genvy-button') as GenvyButton;
@@ -1384,7 +1441,6 @@ export class WorldToolScene extends Phaser.Scene {
       stampField,
       cellField,
       toolRow,
-      clearBtn,
     );
     // Which sections belong only to ZONE painting: in tile modes the panel
     // keeps just the tools, the brush size and the eraser — the rest of the
@@ -1710,6 +1766,7 @@ export class WorldToolScene extends Phaser.Scene {
     const showZones = !concept && (showScene || showTiles);
     this.maskGfx?.setVisible(showZones && this.maskVisible);
     this.shapeGfx?.setVisible(showZones && this.maskVisible);
+    for (const label of this.frictionLabels) label.setVisible(showZones && this.maskVisible);
 
     if (!this.sceneActive) {
       this.dummy?.destroy();
@@ -2215,6 +2272,60 @@ export class WorldToolScene extends Phaser.Scene {
     }
     g.setVisible(this.sceneActive && this.maskVisible);
     this.shapeGfx = g;
+    this.drawFrictionLabels();
+  }
+
+  /**
+   * Print each shape's surface friction on the shape.
+   *
+   * Friction rides on SHAPES rather than cells, and two ramps of the same
+   * kind can be dry or icy — which made the value invisible once painted:
+   * the colour says solid-or-ramp, and nothing said 0.1 or 1.6. An explicit
+   * value reads bright, one inherited from the kind's default reads dim, so
+   * the two are told apart without a legend.
+   */
+  private drawFrictionLabels() {
+    for (const label of this.frictionLabels) label.destroy();
+    this.frictionLabels = [];
+    const show = this.sceneActive && this.maskVisible;
+    const zoom = this.cameras.main.zoom;
+    this.labelZoom = zoom;
+    for (const shape of this.shapes) {
+      const kind = SCENE_MASK_KINDS.find((k) => k.id === shape.kind);
+      if (!kind) continue;
+      const explicit = shape.friction !== undefined;
+      // defaultFriction is keyed by the kind's NAME, not its numeric id.
+      const value = shape.friction ?? defaultFriction(kind.key);
+      const at = this.shapeCentre(shape);
+      if (!at) continue;
+      const text = this.add
+        .text(at.x, at.y, String(Number(value.toFixed(2))), {
+          fontFamily: 'monospace',
+          fontSize: '11px',
+          color: explicit ? kind.color : '#8aa0b8',
+          backgroundColor: 'rgba(0,0,0,0.55)',
+          padding: { x: 3, y: 1 },
+        })
+        .setOrigin(0.5)
+        .setDepth(22)
+        .setScale(1 / zoom)
+        .setVisible(show);
+      this.frictionLabels.push(text);
+    }
+  }
+
+  /** Where a shape's readout goes: its centroid, or a circle's centre. */
+  private shapeCentre(shape: SceneShape): { x: number; y: number } | null {
+    if (shape.type === 'circle') return shape.points[0] ?? null;
+    const outline = shapeOutline(shape);
+    if (outline.length === 0) return null;
+    let x = 0;
+    let y = 0;
+    for (const p of outline) {
+      x += p.x;
+      y += p.y;
+    }
+    return { x: x / outline.length, y: y / outline.length };
   }
 
   /** Fill + outline one shape. Circles are drawn as circles, not as facets. */
@@ -2627,7 +2738,17 @@ export class WorldToolScene extends Phaser.Scene {
     const scene = this.activeScene;
     if (!scene) return;
     this.pushMaskUndo(); // strip changes are steps in the same history
-    const saved = await api.updateAsset<Scene>(scene.id, { ...scene, segments });
+    // Cropping, mirroring or modifying a panel changes what the scene LOOKS
+    // like, so its icon and card preview are re-cut from panel one in the
+    // same write. Without this the inventory kept the picture the scene had
+    // before the edit, and the version stamp only fetched that stale file
+    // again.
+    const thumbnail = await this.sceneThumbnail(scene.id, segments[0]?.image.path);
+    const saved = await api.updateAsset<Scene>(scene.id, {
+      ...scene,
+      segments,
+      ...(thumbnail ? { thumbnail } : {}),
+    });
     this.activeSegment = Math.max(0, Math.min(this.activeSegment, segments.length - 1));
     await this.displayScene(saved);
     await collection.refresh();
@@ -4462,25 +4583,58 @@ export class WorldToolScene extends Phaser.Scene {
    * A 64x64 icon for the level: its backdrop if it has one, else the
    * tileset's first tile. Cut from art already on disk, so it costs nothing
    * — and without it the inventory shows a placeholder glyph for every level.
+   *
+   * The bigger card preview is re-cut alongside it. Both are keyed on the
+   * artwork's PATH AND its updatedAt: a re-paint or a crop rewrites the same
+   * file, so keying on the path alone meant the inventory kept showing the
+   * picture the level had on the day it was first saved.
    */
   private async levelThumbnail(): Promise<string | undefined> {
     const scene = this.activeScene;
     if (scene) {
-      if (this.levelThumbFor === scene.image.path) return this.levelThumbCache;
+      const stamp = `${scene.image.path}:${scene.updatedAt}`;
+      if (this.levelThumbFor === stamp) return this.levelThumbCache;
       try {
         const { thumbnail } = await api.makeThumbnail({
           assetId: scene.id,
           sourceFile: scene.image.path.split('/').pop() ?? 'raw.png',
           size: 64,
         });
-        this.levelThumbFor = scene.image.path;
+        this.levelThumbFor = stamp;
         this.levelThumbCache = thumbnail;
+        // The detail card's 384px preview comes off the same artwork; re-cut
+        // it now so opening the card does not show the stale one first.
+        void api.assetPreview(scene.id, 384).catch(() => {
+          // Free and cosmetic; never fail a save over it.
+        });
         return thumbnail;
       } catch {
         // A missing icon is not worth failing a save over.
       }
     }
     return this.tileset?.thumbnail;
+  }
+
+  /**
+   * Re-cut a scene's 64px icon (and the card's 384px preview) from its
+   * current artwork. Deterministic and free — the render is already paid for
+   * and on disk.
+   */
+  private async sceneThumbnail(sceneId: string, imagePath?: string): Promise<string | undefined> {
+    if (!imagePath) return undefined;
+    try {
+      const { thumbnail } = await api.makeThumbnail({
+        assetId: sceneId,
+        sourceFile: imagePath.split('/').pop() ?? 'raw.png',
+        size: 64,
+      });
+      void api.assetPreview(sceneId, 384).catch(() => {
+        // Cosmetic; the icon above is the part that matters.
+      });
+      return thumbnail;
+    } catch {
+      return undefined;
+    }
   }
 
   /** A saved level clears every draft that was standing in for it. */
