@@ -978,7 +978,9 @@ export class WorldToolScene extends Phaser.Scene {
     // follow — autoscroll under those reads as the view running away.
     if (!p || !p.overCanvas || this.spacePanning || this.dummy?.active) return;
     const edge = this.visibleCanvasEdges(p);
-    const margin = 5; // CSS px, as specified
+    // Half of the original 5px: the cursor has to commit to the edge, so
+    // crossing the band on the way to the header or a dock does not pan.
+    const margin = 2.5; // CSS px
     const dx = p.x - edge.left < margin ? -1 : edge.right - p.x < margin ? 1 : 0;
     const dy = p.y - edge.top < margin ? -1 : edge.bottom - p.y < margin ? 1 : 0;
     if (dx === 0 && dy === 0) return;
