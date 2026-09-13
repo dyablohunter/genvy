@@ -12,6 +12,7 @@ import {
   maskKindsInOrder,
   shapeOutline,
   pointInShape,
+  pointInPolygon,
   fillMaskPolygon,
   sceneSegments,
   surfaceFriction,
@@ -2205,19 +2206,21 @@ export class WorldToolScene extends Phaser.Scene {
       this.pixelAt(pointer),
     );
     if (this.closesShape(p)) {
-      if (this.paintingZones) {
-        this.commitShape({
-          id: `sh_${Date.now().toString(36)}`,
-          kind: this.maskKind,
-          type: 'polygon',
-          points: this.penPoints.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })),
-        });
-      } else {
-        this.rasterizePolygonToTiles(this.penPoints);
-      }
+      const closed: SceneShape = {
+        id: `sh_${Date.now().toString(36)}`,
+        kind: this.maskKind,
+        type: 'polygon',
+        points: this.penPoints.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })),
+      };
+      const erasing = this.tool === 'erase';
+      if (!this.paintingZones) this.rasterizePolygonToTiles(this.penPoints);
+      // A closed path with the eraser armed clears what it encloses, the same
+      // as the drag-out tools.
+      else if (erasing) this.eraseWithin(closed);
+      else this.commitShape(closed);
       this.penPoints = [];
       UISound.play('confirm');
-      HudShell.toast('SHAPE CLOSED', 'success');
+      if (!erasing) HudShell.toast('SHAPE CLOSED', 'success');
       return;
     }
     this.penPoints.push(p);
@@ -2226,6 +2229,40 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /** Add a finished vector shape, undoably. */
+  /**
+   * Use a traced shape to TAKE PAINT AWAY rather than to add it.
+   *
+   * With the eraser armed, a rectangle, triangle, circle or closed pen path
+   * used to commit a shape like any other — so the eraser worked with the
+   * brush and silently painted with everything else. Now the outline clears
+   * the cells it encloses and removes the shapes whose centre falls inside
+   * it, which is what dragging an eraser over an area means.
+   */
+  private eraseWithin(shape: SceneShape) {
+    const outline = shapeOutline(shape);
+    if (outline.length < 3) return;
+    this.pushMaskUndo();
+    const cleared = fillMaskPolygon(
+      this.mask,
+      outline.map((pt) => ({ x: pt.x / this.maskCell, y: pt.y / this.maskCell })),
+      0,
+    );
+    const before = this.shapes.length;
+    this.shapes = this.shapes.filter((other) => {
+      const at = this.shapeCentre(other);
+      return !at || !pointInPolygon(outline, at.x, at.y);
+    });
+    const removed = before - this.shapes.length;
+    this.drawMask();
+    this.drawShapes();
+    this.draftDirty = true;
+    if (cleared === 0 && removed === 0) return HudShell.toast('NOTHING TO ERASE THERE');
+    HudShell.toast(
+      removed > 0 ? `ERASED · ${removed} SHAPE(S) REMOVED` : 'ERASED',
+      'success',
+    );
+  }
+
   private commitShape(shape: SceneShape) {
     this.pushMaskUndo();
     if (this.shapeFriction !== null) shape.friction = this.shapeFriction;
@@ -4345,8 +4382,9 @@ export class WorldToolScene extends Phaser.Scene {
         const shape = this.dragToShape();
         this.shapeDrag = null;
         if (shape) {
-          if (this.paintingZones) this.commitShape(shape);
-          else this.rasterizePolygonToTiles(shapeOutline(shape));
+          if (!this.paintingZones) this.rasterizePolygonToTiles(shapeOutline(shape));
+          else if (this.tool === 'erase') this.eraseWithin(shape);
+          else this.commitShape(shape);
           UISound.play('confirm');
         } else {
           this.drawShapes(); // clear the abandoned preview
@@ -4503,7 +4541,6 @@ export class WorldToolScene extends Phaser.Scene {
       this.maskTool === 'line' ? this.penAnchor : this.painting ? this.strokeOrigin : null,
       raw,
     );
-    const r = this.brushSize / 2 - 0.5;
     if (this.maskTool === 'line' && this.penAnchor) {
       g.lineStyle(Math.max(thin, size * 0.35), color, 0.35);
       g.lineBetween(
@@ -4526,8 +4563,12 @@ export class WorldToolScene extends Phaser.Scene {
       g.fillRect(bx, by, span, span);
       g.lineStyle(thin, color, 0.55);
       g.strokeRect(bx, by, span, span);
+      // Centred on the BLOCK, not on the hovered cell. An even brush spans
+      // its cells asymmetrically about the cursor (stampMask puts the nib's
+      // centre between cells), so pinning the ring to the cell centre drew it
+      // half a cell up and left of the dab it was promising.
       g.lineStyle(thick, color, 0.95);
-      g.strokeCircle((cell.x + 0.5) * size, (cell.y + 0.5) * size, (r + 0.5) * size);
+      g.strokeCircle(bx + span / 2, by + span / 2, span / 2);
     }
     g.lineStyle(thin, color, 0.4);
     g.strokeRect(cell.x * size, cell.y * size, size, size);

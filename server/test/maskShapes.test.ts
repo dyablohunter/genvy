@@ -355,3 +355,70 @@ describe('mask kind icons', () => {
     }
   });
 });
+
+/**
+ * Callers turn PIXELS into cells by dividing, so the points arrive
+ * fractional. The scan bounds are loop indices into the mask, so taking them
+ * raw indexed `mask[14.06]` — undefined — and the fill THREW instead of
+ * filling. That is what broke erasing with a shape tool and rasterising a
+ * traced shape onto a tile grid, both silently, since the throw happened
+ * inside a Phaser input callback.
+ */
+describe('fillMaskPolygon with fractional cell coordinates', () => {
+  const grid = (w: number, h: number) =>
+    Array.from({ length: h }, () => Array.from({ length: w }, () => 0));
+
+  it('fills instead of throwing', () => {
+    const mask = grid(20, 20);
+    // A rectangle in pixels, divided by a 16px cell: 14.0625, 1.8125, ...
+    const pts = [
+      { x: 225 / 16, y: 29 / 16 },
+      { x: 400 / 16, y: 29 / 16 },
+      { x: 400 / 16, y: 200 / 16 },
+      { x: 225 / 16, y: 200 / 16 },
+    ];
+    let filled = 0;
+    expect(() => {
+      filled = fillMaskPolygon(mask, pts, 3);
+    }).not.toThrow();
+    expect(filled).toBeGreaterThan(0);
+    // Every written cell is a real cell, and every row is a real row.
+    for (const row of mask) expect(row.length).toBe(20);
+    expect(mask.flat().filter((v) => v === 3).length).toBe(filled);
+  });
+
+  it('covers the cells the polygon really touches', () => {
+    const mask = grid(10, 10);
+    // Exactly cells 2..4 on both axes, expressed fractionally.
+    fillMaskPolygon(
+      mask,
+      [
+        { x: 2.5, y: 2.5 },
+        { x: 4.5, y: 2.5 },
+        { x: 4.5, y: 4.5 },
+        { x: 2.5, y: 4.5 },
+      ],
+      1,
+    );
+    expect(mask[3]![3]).toBe(1); // well inside
+    expect(mask[0]![0]).toBe(0); // well outside
+    expect(mask[9]![9]).toBe(0);
+  });
+
+  it('still clamps to the mask when the polygon runs off it', () => {
+    const mask = grid(6, 6);
+    expect(() =>
+      fillMaskPolygon(
+        mask,
+        [
+          { x: -12.5, y: -8.25 },
+          { x: 99.5, y: -8.25 },
+          { x: 99.5, y: 99.75 },
+          { x: -12.5, y: 99.75 },
+        ],
+        2,
+      ),
+    ).not.toThrow();
+    expect(mask.flat().every((v) => v === 2)).toBe(true);
+  });
+});

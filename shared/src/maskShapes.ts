@@ -119,10 +119,16 @@ export function fillMaskPolygon(mask: number[][], points: MaskPoint[], value: nu
   const width = mask[0]?.length ?? 0;
   if (points.length < 3 || height === 0 || width === 0) return 0;
 
-  const minY = Math.max(0, Math.min(...points.map((p) => p.y)));
-  const maxY = Math.min(height - 1, Math.max(...points.map((p) => p.y)));
-  const minX = Math.max(0, Math.min(...points.map((p) => p.x)));
-  const maxX = Math.min(width - 1, Math.max(...points.map((p) => p.x)));
+  // Callers convert PIXELS to cells by dividing, so the points arrive
+  // fractional. The scan bounds are loop INDICES into the mask, so they have
+  // to be whole cells — taken raw, `mask[14.06]` is undefined and the fill
+  // threw instead of filling (which is what broke erasing with a shape tool,
+  // and rasterising a traced shape onto a tile grid). Outward to whole cells,
+  // so every cell the polygon touches is still scanned.
+  const minY = Math.max(0, Math.floor(Math.min(...points.map((p) => p.y))));
+  const maxY = Math.min(height - 1, Math.ceil(Math.max(...points.map((p) => p.y))));
+  const minX = Math.max(0, Math.floor(Math.min(...points.map((p) => p.x))));
+  const maxX = Math.min(width - 1, Math.ceil(Math.max(...points.map((p) => p.x))));
 
   let filled = 0;
   for (let y = minY; y <= maxY; y++) {
