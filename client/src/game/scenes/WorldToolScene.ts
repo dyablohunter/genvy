@@ -14,6 +14,7 @@ import {
   fillMaskPolygon,
   sceneSegments,
   defaultFriction,
+  newAssetId,
   type SceneShape,
   type SceneSegment,
   type Character,
@@ -301,6 +302,16 @@ export class WorldToolScene extends Phaser.Scene {
 
   create(data: WorldToolData) {
     enterScene(this);
+    /**
+     * Phaser only EMITS `shutdown`; it never calls a Scene subclass's
+     * `shutdown()` method (Systems.shutdown just does `events.emit`). So this
+     * one line is what makes teardown run at all — without it the method
+     * below had never executed: the strip timeline survived a trip back to
+     * the hub and kept its row of the layout, four window listeners leaked
+     * on every visit, and the last seconds of painting were never flushed to
+     * the draft or autosaved into the level.
+     */
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.shutdown());
     this.resetState();
 
     HudShell.setBackVisible(true);
@@ -4502,6 +4513,28 @@ export class WorldToolScene extends Phaser.Scene {
     // level (like the tileset), and naming the parts separately was asking
     // the same question twice.
 
+    /**
+     * Saving twice must not leave two levels behind. The id lives only in
+     * scene memory, so a reload or a trip to the hub loses it — re-find by
+     * NAME before creating anything. Resolved FIRST, because the icon has to
+     * be cut into the level's own directory and a new level needs its id to
+     * have one.
+     */
+    let targetId = this.levelId;
+    if (!targetId) {
+      try {
+        const existing = await api.listAssets({ type: 'level' });
+        const match = existing.find(
+          (a) => a.name.trim().toLowerCase() === name.trim().toLowerCase(),
+        );
+        if (match) targetId = match.id;
+      } catch {
+        // Listing failed — create rather than lose the work.
+      }
+    }
+    const created = !targetId;
+    const id = targetId ?? newAssetId('level');
+
     const payload: Record<string, unknown> = {
       name,
       description: '',
@@ -4525,36 +4558,14 @@ export class WorldToolScene extends Phaser.Scene {
           }
         : {}),
       spawnPoints: this.plannedSpawns,
-      thumbnail: await this.levelThumbnail(),
+      thumbnail: await this.levelThumbnail(id),
     };
 
-    /**
-     * Saving twice must not leave two levels behind. The id lives only in
-     * scene memory, so a reload or a trip to the hub loses it — re-find by
-     * NAME before creating anything.
-     */
-    let targetId = this.levelId;
-    if (!targetId) {
-      try {
-        const existing = await api.listAssets({ type: 'level' });
-        const match = existing.find(
-          (a) => a.name.trim().toLowerCase() === name.trim().toLowerCase(),
-        );
-        if (match) targetId = match.id;
-      } catch {
-        // Listing failed — create rather than lose the work.
-      }
-    }
-    if (targetId) {
-      await api.updateAsset(targetId, payload);
-      this.levelId = targetId;
-      this.clearLevelDrafts();
-      return { created: false };
-    }
-    const saved = await api.createAsset<Level>('level', payload);
-    this.levelId = saved.id;
+    if (created) await api.createAsset<Level>('level', { id, ...payload });
+    else await api.updateAsset(id, payload);
+    this.levelId = id;
     this.clearLevelDrafts();
-    return { created: true };
+    return { created };
   }
 
   /**
@@ -4607,30 +4618,41 @@ export class WorldToolScene extends Phaser.Scene {
    * file, so keying on the path alone meant the inventory kept showing the
    * picture the level had on the day it was first saved.
    */
-  private async levelThumbnail(): Promise<string | undefined> {
+  private async levelThumbnail(levelId: string): Promise<string | undefined> {
+    // Cut from the backdrop if there is one, else from the tileset's own
+    // icon (its first tile) — a whole sheet shrunk to 64px is a mosaic.
     const scene = this.activeScene;
-    if (scene) {
-      const stamp = `${scene.image.path}:${scene.updatedAt}`;
-      if (this.levelThumbFor === stamp) return this.levelThumbCache;
-      try {
-        const { thumbnail } = await api.makeThumbnail({
-          assetId: scene.id,
-          sourceFile: scene.image.path.split('/').pop() ?? 'raw.png',
-          size: 64,
-        });
-        this.levelThumbFor = stamp;
-        this.levelThumbCache = thumbnail;
-        // The detail card's 384px preview comes off the same artwork; re-cut
-        // it now so opening the card does not show the stale one first.
-        void api.assetPreview(scene.id, 384).catch(() => {
-          // Free and cosmetic; never fail a save over it.
-        });
-        return thumbnail;
-      } catch {
-        // A missing icon is not worth failing a save over.
-      }
+    const ts = this.tileset;
+    const src = scene
+      ? { dir: scene.id, path: scene.image.path, at: scene.updatedAt }
+      : ts?.thumbnail
+        ? { dir: this.sourceDirOf(ts, ts.thumbnail), path: ts.thumbnail, at: ts.updatedAt }
+        : null;
+    if (!src) return undefined;
+    const stamp = `${levelId}:${src.path}:${src.at}`;
+    if (this.levelThumbFor === stamp) return this.levelThumbCache;
+    try {
+      const { thumbnail } = await api.makeThumbnail({
+        // Into the LEVEL's folder, out of the PART's artwork. Writing into
+        // the part's folder made the two assets share one icon file, so
+        // naming a level replaced its backdrop's own icon with the level's.
+        assetId: levelId,
+        sourceAssetId: src.dir,
+        sourceFile: src.path.split('/').pop() ?? 'raw.png',
+        size: 64,
+      });
+      this.levelThumbFor = stamp;
+      this.levelThumbCache = thumbnail;
+      // The card's 384px preview comes off the same artwork; re-cut it now so
+      // opening the card does not show a stale one first.
+      void api.assetPreview(levelId, 384).catch(() => {
+        // Free and cosmetic; never fail a save over it.
+      });
+      return thumbnail;
+    } catch {
+      // A missing icon is not worth failing a save over.
+      return undefined;
     }
-    return this.tileset?.thumbnail;
   }
 
   /**

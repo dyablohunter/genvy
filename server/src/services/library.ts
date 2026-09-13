@@ -197,6 +197,16 @@ export class Library {
     return map;
   }
 
+  /**
+   * Every asset that at least one other asset points at. These are PARTS —
+   * a level's backdrop and tileset, a character's sheet — and a listing that
+   * shows them beside the thing built from them shows the same artwork two or
+   * three times over.
+   */
+  async referencedIds(): Promise<string[]> {
+    return [...(await this.referrerMap()).keys()];
+  }
+
   async remove(id: string, opts: { force?: boolean; cascade?: boolean } = {}) {
     await this.removeInner(id, opts, new Set());
   }

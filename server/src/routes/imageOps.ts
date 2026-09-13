@@ -59,14 +59,28 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
    * Levels and scenes had no thumbnail at all, so the inventory showed them
    * as a generic placeholder glyph; a level is recognised by its artwork.
    */
-  app.post<{ Body: { assetId: string; sourceFile: string; size?: number; outName?: string } }>(
+  app.post<{
+    Body: {
+      assetId: string;
+      /**
+       * Whose artwork to cut FROM, when it is not the asset being given the
+       * icon. A level is recognised by its backdrop but does not own it, and
+       * writing the icon into the backdrop's directory made the two share one
+       * file — naming a level silently replaced its scene's own icon.
+       */
+      sourceAssetId?: string;
+      sourceFile: string;
+      size?: number;
+      outName?: string;
+    };
+  }>(
     '/api/image/thumbnail',
     async (req) => {
-      const b = req.body ?? ({} as { assetId: string; sourceFile: string });
+      const b = req.body ?? ({} as typeof req.body);
       if (!b.assetId || !b.sourceFile) {
         throw new LibraryError(400, 'assetId and sourceFile required');
       }
-      const png = await loadSource(b.assetId, b.sourceFile);
+      const png = await loadSource(b.sourceAssetId ?? b.assetId, b.sourceFile);
       const size = Math.min(256, Math.max(16, Math.round(b.size ?? 64)));
       // The caller names the file. `thumb.png` already means "thumbnail of
       // the sheet" inside a sprite workspace, so writing there would replace
@@ -123,7 +137,11 @@ export function registerImageOpRoutes(app: FastifyInstance, library: Library) {
       const source = await sourceOf(req.params.id);
       if (!source) throw new LibraryError(404, 'no image to preview');
       const png = await loadSource(source.assetId, source.file);
-      const rel = await save(source.assetId, `preview-${size}.png`, await pipe.makeThumbnail(png, size));
+      // Written into the asset that ASKED for it. A level borrows its
+      // backdrop's artwork, and saving the cut into the backdrop's directory
+      // made the two share one file — so naming a level replaced its scene's
+      // own card preview.
+      const rel = await save(req.params.id, `preview-${size}.png`, await pipe.makeThumbnail(png, size));
       return { preview: rel };
     },
   );

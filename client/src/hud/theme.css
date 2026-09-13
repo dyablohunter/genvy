@@ -700,6 +700,21 @@ genvy-button[data-off] button {
   padding: 4px 2px;
 }
 
+/* What an asset is built from, on its detail card. */
+.g-inv-parts {
+  display: flex;
+  gap: 6px;
+}
+
+.g-inv-parts:empty {
+  display: none;
+}
+
+.g-inv-parts .g-char-icon {
+  width: 48px;
+  flex: 0 0 auto;
+}
+
 #genvy-topbar .inv-btn {
   cursor: pointer;
   font-size: 11px;

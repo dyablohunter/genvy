@@ -191,11 +191,16 @@ export const api = {
     request<ComposeSheetResponse>('POST', '/api/image/compose-sheet', body),
 
   /** A detail-panel-sized preview of an asset, cut from its own art. Free. */
+  /** Ids that some other asset points at: the parts, not the assembled thing. */
+  listReferenced: () =>
+    request<{ ids: string[] }>('GET', '/api/library/referenced').then((r) => r.ids),
   assetPreview: (id: string, size = 384) =>
     request<{ preview: string }>('GET', `/api/asset-preview/${id}?size=${size}`),
   /** Make a small square icon from an asset's own image — free, no AI. */
   makeThumbnail: (body: {
     assetId: string;
+    /** Cut from THIS asset's files, but write the icon into `assetId`'s. */
+    sourceAssetId?: string;
     sourceFile: string;
     size?: number;
     /** Defaults to thumb.png; sprite workspaces already use that name. */

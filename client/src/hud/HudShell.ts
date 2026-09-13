@@ -420,6 +420,7 @@ class HudShellImpl {
     // the workspace list — a ~25ms call, so fetch it on open rather than
     // leaving that one button blank until its shelf is opened.
     if (!this.workspaceCache) void this.refreshWorkspaces();
+    void this.refreshReferenced();
     void slideIn(drawer, 'top');
     // Clicking anywhere outside the inventory (or its detail flyout) closes it.
     this.drawerDismiss = (ev: PointerEvent) => {
@@ -459,6 +460,13 @@ class HudShellImpl {
   private workspaceCache: import('@genvy/shared').WorkspaceInfo[] | null = null;
   /** Set when the collection changed: refresh in the background, not in line. */
   private workspaceStale = true;
+  /**
+   * Ids some other asset points at — a level's backdrop and tileset, a
+   * character's sheet. They are PARTS, and listing them beside the thing
+   * built from them put two squares of the same artwork in the shelf, which
+   * reads as a duplicate of one creation. Null until the first fetch.
+   */
+  private referencedIds: Set<string> | null = null;
 
   private renderDrawer(entries: AssetIndexEntry[]) {
     this.renderToolRow(entries);
@@ -476,7 +484,11 @@ class HudShellImpl {
     row.innerHTML = '';
     for (const tool of TOOLS) {
       const types = TOOL_ASSET_TYPES[tool.id] ?? [];
-      const count = entries.filter((e) => types.includes(e.type)).length;
+      // Counted the same way the shelf is filled, or the badge contradicts
+      // the row it opens.
+      const count = entries.filter(
+        (e) => types.includes(e.type) && !this.referencedIds?.has(e.id),
+      ).length;
       const btn = document.createElement('div');
       btn.className = 'g-inv-tool';
       btn.dataset.tool = tool.id;
@@ -527,7 +539,13 @@ class HudShellImpl {
     }
 
     const types = TOOL_ASSET_TYPES[this.invTool] ?? [];
-    const visible = entries.filter((e) => types.includes(e.type) && !DRAWER_HIDDEN_TYPES.has(e.type));
+    const visible = entries.filter(
+      (e) =>
+        types.includes(e.type) &&
+        !DRAWER_HIDDEN_TYPES.has(e.type) &&
+        // A part is reached through the asset built from it, not listed twice.
+        !this.referencedIds?.has(e.id),
+    );
     if (visible.length === 0) {
       shelf.appendChild(this.emptyShelf());
       return;
@@ -674,6 +692,22 @@ class HudShellImpl {
   }
 
   private workspaceRefreshing = false;
+
+  /** Re-read which assets are parts, and redraw the shelf if that changed. */
+  private async refreshReferenced() {
+    try {
+      const ids = await api.listReferenced();
+      const next = new Set(ids);
+      const same =
+        this.referencedIds !== null &&
+        this.referencedIds.size === next.size &&
+        [...next].every((id) => this.referencedIds!.has(id));
+      this.referencedIds = next;
+      if (!same && this.drawer) this.renderDrawer(collection.entries);
+    } catch {
+      // Without the list everything is shown, which is the old behaviour.
+    }
+  }
 
   /** One workspace per variant slot: prefer saved, else the newest. */
   private variantSlots(
@@ -940,6 +974,47 @@ class HudShellImpl {
     this.actionRowFor = id;
   }
 
+  /**
+   * Fill a card's parts row: the assets this one references, each opening in
+   * its own right. Their index rows are already in memory, so this costs one
+   * request for the asset's own references.
+   */
+  private async fillParts(host: HTMLElement, entry: AssetIndexEntry) {
+    let refs: { id: string }[] = [];
+    try {
+      const asset = (await api.getAsset(entry.id)) as Record<string, unknown>;
+      refs = (['scene', 'tileset'] as const)
+        .map((key) => asset[key] as { id?: string } | undefined)
+        .filter((r): r is { id: string } => typeof r?.id === 'string');
+    } catch {
+      return;
+    }
+    if (refs.length === 0) return;
+    for (const ref of refs) {
+      const part = collection.entries.find((e) => e.id === ref.id);
+      if (!part) continue;
+      const icon = document.createElement('div');
+      icon.className = 'g-char-icon';
+      icon.title = `OPEN ${part.name.toUpperCase()} · ${assetTypeLabel(part.type)}`;
+      if (part.thumbnail) {
+        const img = document.createElement('img');
+        img.src = `/library/files/${part.thumbnail}?v=${part.updatedAt}`;
+        icon.appendChild(img);
+      } else {
+        icon.innerHTML = `<div class="g-thumb-fallback">${typeIcon(part.type)}</div>`;
+      }
+      icon.addEventListener('mouseenter', () => UISound.play('hover'));
+      icon.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        UISound.play('click');
+        this.closeCharDetail();
+        this.hideDrawer();
+        this.onOpenAsset?.(part);
+      });
+      host.appendChild(icon);
+    }
+  }
+
   /** Expand OPEN / RENAME / DELETE under the clicked card. */
   /**
    * Open an asset's detail beside the inventory, the way a character's does.
@@ -986,6 +1061,14 @@ class HudShellImpl {
       preview.innerHTML = `<div class="g-thumb-fallback">${typeIcon(entry.type)}</div>`;
     }
 
+    // What this asset is BUILT FROM, as squares under the preview — the way a
+    // character's card reaches its variants. Hiding the parts from the shelf
+    // would otherwise make a level's tileset unreachable, which is the half
+    // of this that actually matters.
+    const parts = document.createElement('div');
+    parts.className = 'g-inv-parts';
+    void this.fillParts(parts, entry);
+
     const mk = (label: string, variant: string, fn: () => void) => {
       const b = document.createElement('genvy-button') as GenvyButton;
       b.setAttribute('label', label);
@@ -1026,7 +1109,7 @@ class HudShellImpl {
         await collection.refresh();
       })();
     });
-    detail.append(name, preview, rename, del);
+    detail.append(name, preview, parts, rename, del);
 
     // Place it AFTER mounting, against its real width: the card hangs under
     // the item that opened it and is clamped to the viewport, so an item at

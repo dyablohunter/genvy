@@ -41,6 +41,16 @@ export function registerAssetRoutes(app: FastifyInstance, library: Library) {
   app.get('/api/library/orphans', async () => library.orphans());
   // All file dirs with session linkage + saved assets (drawer grouping).
   app.get('/api/library/workspaces', async () => library.workspaces());
+  /**
+   * Ids that some OTHER asset points at — the parts, as opposed to the things
+   * assembled from them. A level references the backdrop and the tileset it is
+   * built from, and listing those beside it put two or three squares of the
+   * same artwork in the inventory, which read as duplicates of one creation.
+   * One pass over the reference map, so this costs what one listing costs.
+   */
+  app.get('/api/library/referenced', async () => ({
+    ids: await library.referencedIds(),
+  }));
   app.delete<{ Params: { id: string } }>('/api/library/orphans/:id', async (req, reply) => {
     await library.removeOrphan(req.params.id);
     reply.code(204);
