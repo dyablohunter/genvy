@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { surfaceFriction, defaultFriction, maskKindKey, SCENE_MASK_KINDS, LevelSchema, newAssetId } from '@genvy/shared';
+import {
+  surfaceFriction,
+  defaultFriction,
+  maskKindKey,
+  maskKindsInOrder,
+  SCENE_MASK_KINDS,
+  LevelSchema,
+  newAssetId,
+} from '@genvy/shared';
 
 /**
  * A mask CELL stores one kind id and nothing else, so per-cell friction has
@@ -64,5 +72,31 @@ describe('LevelSchema.frictionByKind', () => {
   it('rejects a friction outside the range the picker offers', () => {
     expect(() => LevelSchema.parse({ ...base(), frictionByKind: { '11': 9 } })).toThrow();
     expect(() => LevelSchema.parse({ ...base(), frictionByKind: { '11': -1 } })).toThrow();
+  });
+});
+
+/**
+ * Ids live inside every painted mask, so a kind added later takes the next
+ * number — which is why the PAINT AS row must be ordered by what the kinds
+ * DO, not by id, and why nothing here may renumber them.
+ */
+describe('maskKindsInOrder', () => {
+  it('offers every kind exactly once', () => {
+    const order = maskKindsInOrder();
+    expect(order).toHaveLength(SCENE_MASK_KINDS.length);
+    expect(new Set(order.map((k) => k.id)).size).toBe(SCENE_MASK_KINDS.length);
+  });
+
+  it('keeps the standing surfaces together, ramp and stairs included', () => {
+    const keys = maskKindsInOrder().map((k) => k.key);
+    expect(keys.slice(0, 5)).toEqual(['solid', 'platform', 'ramp', 'stairs', 'ladder']);
+    // They are ids 11 and 12: declaration order would have put them last.
+    expect(SCENE_MASK_KINDS.find((k) => k.key === 'ramp')!.id).toBe(11);
+    expect(SCENE_MASK_KINDS.find((k) => k.key === 'stairs')!.id).toBe(12);
+  });
+
+  it('leaves the authoring markers at the end', () => {
+    const keys = maskKindsInOrder().map((k) => k.key);
+    expect(keys.slice(-2)).toEqual(['spawnPlayer', 'spawnNpc']);
   });
 });

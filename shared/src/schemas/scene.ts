@@ -288,6 +288,43 @@ export function surfaceFriction(
   return defaultFriction(maskKindKey(kindId));
 }
 
+/**
+ * The order the kinds are OFFERED in, which is not the order they were
+ * declared in. Ids are stored inside every painted mask, so a kind added
+ * later has to take the next number — ramp and stairs are 11 and 12 — and
+ * rendering the row in id order dropped them at the end, away from the
+ * platform and ladder they belong beside. Grouped here instead: surfaces you
+ * stand on, then ways through, then what hurts or triggers, then the markers
+ * that are only for authoring.
+ */
+const MASK_KIND_ORDER = [
+  'solid',
+  'platform',
+  'ramp',
+  'stairs',
+  'ladder',
+  'ledge',
+  'water',
+  'hazard',
+  'cover',
+  'walkable',
+  'trigger',
+  'spawnPlayer',
+  'spawnNpc',
+] as const;
+
+/** Every mask kind, in the order the PAINT AS row should show them. */
+export function maskKindsInOrder(): (typeof SCENE_MASK_KINDS)[number][] {
+  const byKey = new Map(SCENE_MASK_KINDS.map((k) => [k.key, k]));
+  const ordered = MASK_KIND_ORDER.map((key) => byKey.get(key)).filter(
+    (k): k is (typeof SCENE_MASK_KINDS)[number] => !!k,
+  );
+  // A kind added to the enum but not to the order above still gets offered,
+  // at the end, rather than silently vanishing from the palette.
+  const seen = new Set(ordered.map((k) => k.key));
+  return [...ordered, ...SCENE_MASK_KINDS.filter((k) => !seen.has(k.key))];
+}
+
 /** The mask kinds a view leads with, in the order they should be offered. */
 export function maskKindsForView(view: SceneView) {
   const wanted = SCENE_VIEW_MASK_KINDS[view] ?? SCENE_VIEW_MASK_KINDS.side;

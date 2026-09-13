@@ -9,6 +9,7 @@ import type {
 import {
   buildWorldGrid,
   SCENE_MASK_KINDS,
+  maskKindsInOrder,
   shapeOutline,
   pointInShape,
   fillMaskPolygon,
@@ -1533,8 +1534,10 @@ export class WorldToolScene extends Phaser.Scene {
     row.className = 'g-icon-row';
     this.maskKindButtons.clear();
     // Every type, always: hiding the ones a view "usually" needs turned a
-    // one-click choice into a hunt for where the type went.
-    const kinds = [...SCENE_MASK_KINDS];
+    // one-click choice into a hunt for where the type went. Grouped by what
+    // they DO rather than by id — a kind added later takes the next id, which
+    // had dropped ramp and stairs at the end, away from platform and ladder.
+    const kinds = maskKindsInOrder();
     // Keep the armed layer valid when the view narrows the list.
     if (!kinds.some((k) => k.id === this.maskKind)) this.maskKind = kinds[0]?.id ?? 1;
 
@@ -4698,7 +4701,13 @@ export class WorldToolScene extends Phaser.Scene {
         HudShell.toast(`LEVEL SAVED: ${name.toUpperCase()}`, 'success');
       } else if (reason === 'name') {
         await collection.refresh();
+        // A rename used to save in complete silence: only the FIRST naming,
+        // which creates, said anything. Typing into a box and getting no
+        // answer is how you end up wondering whether it saved at all.
+        HudShell.toast(`RENAMED: ${name.toUpperCase()}`, 'success');
       }
+      // A work autosave stays quiet on purpose — it runs every few seconds
+      // while painting, and a toast that often is noise, not news.
     } catch {
       // A failed autosave must not pass for a successful one; the local
       // draft still holds the work either way.
