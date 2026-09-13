@@ -29,6 +29,13 @@ export const LevelSchema = AssetBaseSchema.extend({
   height: z.number().int().positive().default(23),
   tileWidth: z.number().int().positive().default(64),
   tileHeight: z.number().int().positive().default(64),
+  /**
+   * Friction for this level's PAINTED cells, per mask kind id. A cell holds
+   * one kind and nothing else, so per-cell friction has nowhere to live —
+   * but "every ramp in this level is icy" does, and that is what the friction
+   * field means while a brush is armed. A shape's own `friction` still wins.
+   */
+  frictionByKind: z.record(z.string(), z.number().min(0).max(4)).default({}),
   /** Rows of tile indices, -1 = empty. Empty array when there is no grid. */
   tiles: z.array(z.array(z.number().int().min(-1))).default([]),
   /** One tile stretched across a block of cells. */

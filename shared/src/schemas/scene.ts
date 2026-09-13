@@ -258,6 +258,36 @@ export function defaultFriction(kind: SceneMaskKind): number {
   return SCENE_KIND_FRICTION[kind] ?? 1;
 }
 
+/** The kind key behind a stored mask id. */
+export function maskKindKey(id: number): SceneMaskKind {
+  return (SCENE_MASK_KINDS.find((k) => k.id === id)?.key ?? 'solid') as SceneMaskKind;
+}
+
+/**
+ * The friction a surface ACTUALLY uses, in one place, so painted cells and
+ * traced shapes cannot disagree.
+ *
+ * Three tiers, most specific first:
+ *  1. the shape's own `friction` — one icy ramp among dry ones;
+ *  2. the LEVEL's value for that kind — every ramp in this level is icy,
+ *     which is the only way a hand-painted cell can carry friction at all
+ *     (a cell holds one kind id and nothing else);
+ *  3. the kind's built-in default.
+ *
+ * Without tier 2 the friction field only ever reached vector shapes, and a
+ * ramp you painted by hand was always the stock 0.7 whatever you chose.
+ */
+export function surfaceFriction(
+  kindId: number,
+  byKind?: Record<string, number>,
+  shapeFriction?: number,
+): number {
+  if (shapeFriction !== undefined) return shapeFriction;
+  const own = byKind?.[String(kindId)];
+  if (own !== undefined) return own;
+  return defaultFriction(maskKindKey(kindId));
+}
+
 /** The mask kinds a view leads with, in the order they should be offered. */
 export function maskKindsForView(view: SceneView) {
   const wanted = SCENE_VIEW_MASK_KINDS[view] ?? SCENE_VIEW_MASK_KINDS.side;

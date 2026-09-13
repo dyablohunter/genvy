@@ -13,7 +13,7 @@ import {
   pointInShape,
   fillMaskPolygon,
   sceneSegments,
-  defaultFriction,
+  surfaceFriction,
   newAssetId,
   type SceneShape,
   type SceneSegment,
@@ -278,6 +278,14 @@ export class WorldToolScene extends Phaser.Scene {
   /** Vector collision shapes on the open scene. */
   private shapes: SceneShape[] = [];
   private shapeGfx: Phaser.GameObjects.Graphics | null = null;
+  /**
+   * Friction this level gives each mask KIND, for cells painted by hand. A
+   * cell stores one kind id and nothing else, so this is where "every ramp
+   * in this level is icy" lives; a shape's own value still wins over it.
+   */
+  private cellFriction = new Map<number, number>();
+  /** The friction picker, re-read whenever the armed kind changes. */
+  private frictionSel: HTMLSelectElement | null = null;
   /** One friction readout per shape; see drawShapes. */
   private frictionLabels: Phaser.GameObjects.Text[] = [];
   /** Last zoom the labels were sized for, so they stay screen-constant. */
@@ -901,6 +909,7 @@ export class WorldToolScene extends Phaser.Scene {
     const dummy = new SceneDummy(this, opts, {
       maskAt: (x, y) => this.collisionAt(x, y),
       shapes: () => this.shapes,
+      frictionByKind: () => Object.fromEntries(this.cellFriction),
       // The dummy asks the view only to describe itself; gravity is what
       // actually decides how it moves, and that comes from the options.
       view: () => (opts.gravity > 0 ? 'side' : 'topdown'),
@@ -1160,6 +1169,7 @@ export class WorldToolScene extends Phaser.Scene {
     this.levelThumbCache = undefined;
     this.levelThumbFor = null;
     this.levelStatusHost = null;
+    this.cellFriction = new Map();
     this.gridSettings = null;
     this.gridNewBtn = null;
     this.gridActions = null;
@@ -1293,11 +1303,19 @@ export class WorldToolScene extends Phaser.Scene {
       opt.textContent = label;
       frictionSel.appendChild(opt);
     }
+    this.frictionSel = frictionSel;
     frictionSel.addEventListener('change', () => {
       UISound.play('click');
       this.shapeFriction = frictionSel.value === '' ? null : Number(frictionSel.value);
+      // The same choice has to reach hand-painted cells, which have nowhere
+      // of their own to store it: record it against the armed KIND, so every
+      // cell of that kind in this level uses it.
+      if (this.shapeFriction === null) this.cellFriction.delete(this.maskKind);
+      else this.cellFriction.set(this.maskKind, this.shapeFriction);
+      this.draftDirty = true;
+      this.drawFrictionLabels();
     });
-    const frictionField = field('SURFACE FRICTION (SHAPES)', frictionSel);
+    const frictionField = field('SURFACE FRICTION', frictionSel);
 
     // Brush size in MASK CELLS, so it means the same thing at any zoom.
     const brushSel = document.createElement('select');
@@ -1531,6 +1549,13 @@ export class WorldToolScene extends Phaser.Scene {
         UISound.play('click');
         this.maskKind = kind.id;
         this.tool = 'brush';
+        // The field is a readout as well as a control: show what THIS kind
+        // is set to, or blank for the kind's own default.
+        if (this.frictionSel) {
+          const own = this.cellFriction.get(kind.id);
+          this.frictionSel.value = own === undefined ? '' : String(own);
+          this.shapeFriction = own ?? null;
+        }
         this.onKindPicked?.();
         for (const [id, b] of this.maskKindButtons) {
           b.setAttribute('variant', id === kind.id ? 'accent' : '');
@@ -2351,9 +2376,9 @@ export class WorldToolScene extends Phaser.Scene {
     for (const shape of this.shapes) {
       const kind = SCENE_MASK_KINDS.find((k) => k.id === shape.kind);
       if (!kind) continue;
-      const explicit = shape.friction !== undefined;
-      // defaultFriction is keyed by the kind's NAME, not its numeric id.
-      const value = shape.friction ?? defaultFriction(kind.key);
+      const byKind = Object.fromEntries(this.cellFriction);
+      const explicit = shape.friction !== undefined || byKind[String(shape.kind)] !== undefined;
+      const value = surfaceFriction(shape.kind, byKind, shape.friction);
       const at = this.shapeCentre(shape);
       if (!at) continue;
       const text = this.add
@@ -4082,9 +4107,13 @@ export class WorldToolScene extends Phaser.Scene {
         return;
       }
       if (this.stage === 'edit' && p.leftButtonDown() && !this.spacePanning) {
-        // With the ERASER armed, a click on a vector tool removes the shape under
-        // the cursor rather than starting another one.
-        if (this.paintingZones && this.tool === 'erase' && VECTOR_TOOLS.includes(this.maskTool)) {
+        // With the ERASER armed, a click on a SHAPE removes it — whichever
+        // tool happens to be selected. Gating this on a vector tool being
+        // armed meant the eraser worked on hand-painted cells and silently
+        // did nothing to a traced shape, which is the same eraser as far as
+        // anyone using it is concerned. Cells are erased below when there is
+        // no shape under the cursor.
+        if (this.paintingZones && this.tool === 'erase') {
           if (this.eraseShapeAt(p)) return;
         }
         if (this.maskTool === 'fill') {
@@ -4613,6 +4642,7 @@ export class WorldToolScene extends Phaser.Scene {
           }
         : {}),
       spawnPoints: this.plannedSpawns,
+      frictionByKind: Object.fromEntries(this.cellFriction),
       thumbnail: await this.levelThumbnail(id),
     };
 
@@ -4861,6 +4891,9 @@ export class WorldToolScene extends Phaser.Scene {
           this.maskCell = level.mask.cellSize;
           this.mask = level.mask.data.map((row) => [...row]);
         }
+        this.cellFriction = new Map(
+          Object.entries(level.frictionByKind ?? {}).map(([k, v]) => [Number(k), v]),
+        );
         this.shapes = level.shapes.map((sh) => ({ ...sh, points: sh.points.map((p) => ({ ...p })) }));
         this.drawMask();
         this.drawShapes();

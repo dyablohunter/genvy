@@ -994,17 +994,16 @@ class HudShellImpl {
   }
 
   /**
-   * Fill a card's parts row: the assets this one references, each opening in
-   * its own right. Their index rows are already in memory, so this costs one
-   * request for the asset's own references.
+   * Fill a card's parts row. Their index rows are already in memory, so this
+   * costs one request for the asset's own references.
    */
   private async fillParts(host: HTMLElement, entry: AssetIndexEntry) {
     let refs: { id: string }[] = [];
     try {
       const asset = (await api.getAsset(entry.id)) as Record<string, unknown>;
-      refs = (['scene', 'tileset'] as const)
-        .map((key) => asset[key] as { id?: string } | undefined)
-        .filter((r): r is { id: string } => typeof r?.id === 'string');
+      // Tilesets only — see the call site for why the backdrop is left out.
+      const ref = asset.tileset as { id?: string } | undefined;
+      refs = typeof ref?.id === 'string' ? [{ id: ref.id }] : [];
     } catch {
       return;
     }
@@ -1087,10 +1086,13 @@ class HudShellImpl {
         });
     }
 
-    // What this asset is BUILT FROM, as squares under the preview — the way a
-    // character's card reaches its variants. Hiding the parts from the shelf
-    // would otherwise make a level's tileset unreachable, which is the half
-    // of this that actually matters.
+    // The TILESET this level uses, as a square under the preview. A tileset
+    // is a palette other levels share, so opening it on its own is a real
+    // thing to want — and hiding parts from the shelf would otherwise make it
+    // unreachable. The BACKDROP deliberately gets no square: opening a scene
+    // by itself loads the artwork and its strip WITHOUT the level's zones,
+    // which is strictly less than opening the level, and its picture is the
+    // preview directly above it anyway.
     const parts = document.createElement('div');
     parts.className = 'g-inv-parts';
     void this.fillParts(parts, entry);

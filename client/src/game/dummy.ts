@@ -1,10 +1,6 @@
 import Phaser from 'phaser';
 import type { Scene, SceneShape, Character, Spritesheet, AnimationAsset } from '@genvy/shared';
-import { SCENE_MASK_KINDS, pointInShape, defaultFriction } from '@genvy/shared';
-
-/** The kind key behind a stored mask id, for the friction lookup. */
-const kindKey = (id: number) =>
-  SCENE_MASK_KINDS.find((k) => k.id === id)?.key ?? 'solid';
+import { SCENE_MASK_KINDS, pointInShape, surfaceFriction } from '@genvy/shared';
 import { api, fileUrl } from '../api/client.js';
 import { HudShell } from '../hud/HudShell.js';
 
@@ -85,6 +81,8 @@ export class SceneDummy {
       shapes: () => SceneShape[];
       view: () => Scene['view'];
       bounds: () => { width: number; height: number };
+      /** The level's per-kind friction, which painted cells ride on. */
+      frictionByKind: () => Record<string, number>;
     },
   ) {
     this.height = opts.height;
@@ -231,18 +229,20 @@ export class SceneDummy {
   }
 
   /**
-   * How much grip the surface underfoot gives. A shape's own `friction`
-   * overrides its layer's default, which is the whole point of the field —
-   * one icy ramp among dry ones.
+   * How much grip the surface underfoot gives. Resolved by the shared rule:
+   * the shape's own value, else this LEVEL's value for that kind, else the
+   * kind's default — so a hand-painted ramp obeys the friction field exactly
+   * as a traced one does.
    */
   private surfaceFriction(): number {
     const y = this.pos.y + 1;
+    const byKind = this.world.frictionByKind();
     for (const shape of this.world.shapes()) {
       if (pointInShape(shape, this.pos.x, y)) {
-        return shape.friction ?? defaultFriction(kindKey(shape.kind));
+        return surfaceFriction(shape.kind, byKind, shape.friction);
       }
     }
-    return defaultFriction(kindKey(this.solidAt(this.pos.x, y)));
+    return surfaceFriction(this.solidAt(this.pos.x, y), byKind);
   }
 
   /** The mask id at a world point, shapes included (shapes win). */
