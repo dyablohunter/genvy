@@ -2916,7 +2916,9 @@ export class SpriteToolScene extends Phaser.Scene {
     const ws = this.activeWs();
     const dir = this.subject().primaryView as AnchorDir;
     if (!ws?.wsId || target <= 0 || !this.anchors[dir]) return undefined;
-    const key = `${ws.wsId}:${dir}:${target}`;
+    // Stamped: a changed or restored primary is a new drawing with its own
+    // proportions, so it must not reuse the old drawing's measurement.
+    const key = `${ws.wsId}:${dir}:${target}:${this.anchorStamp}`;
     const cached = this.anchorBodyCache.get(key);
     if (cached !== undefined) return cached;
     try {
