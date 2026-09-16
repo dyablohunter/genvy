@@ -1363,6 +1363,11 @@ export class SpriteToolScene extends Phaser.Scene {
     if (!ws) return;
     await this.busy(`LOCKING IN V${index + 1}...`, async () => {
       if (!ws.wsId) {
+        // A brand-new workspace has no saved versions or pivots — start clean
+        // BEFORE its free views are derived, so none of the previous
+        // variant's pivots are used or carried over.
+        this.anchorHistory = {};
+        this.pivots = {};
         ws.wsId = newAssetId('spritesheet');
         await api.crop({
           assetId: ws.wsId,
@@ -1401,8 +1406,11 @@ export class SpriteToolScene extends Phaser.Scene {
           );
           return;
         }
-      } else if (ws.kept.length === 0) {
-        await this.restoreClips(ws);
+      } else {
+        // An existing workspace: its own saved versions and pivots, not the
+        // last variant's.
+        await this.loadAnchorState(ws.wsId);
+        if (ws.kept.length === 0) await this.restoreClips(ws);
       }
       this.active = index;
       this.anchorView = this.subject().primaryView as AnchorDir;
@@ -3133,13 +3141,41 @@ export class SpriteToolScene extends Phaser.Scene {
       style: Number(this.styleIn.value),
       creativity: Number(this.creativityIn.value),
       subject: this.subjectSel.value,
-      pivots: this.pivots,
-      anchorHistory: this.anchorHistory,
+      // Anchor state is written only into the workspace that owns the anchor
+      // files, never into the session's copy or another variant's.
+      ...(targetId === this.activeWs()?.wsId
+        ? { pivots: this.pivots, anchorHistory: this.anchorHistory }
+        : {}),
       concept: this.concept,
     };
     const form = new FormData();
     form.append('file', new Blob([JSON.stringify(data)], { type: 'application/json' }), 'concept.json');
     void fetch(`/api/files/${targetId}`, { method: 'POST', body: form });
+  }
+
+  /**
+   * Load the anchor state that belongs to ONE variant workspace — its saved
+   * versions and rotation pivots — from that workspace's concept.json, and
+   * nothing else's. Called whenever the active workspace is (re)established,
+   * so switching variants or reopening a sprite never carries another
+   * workspace's history, or an empty one, into this one.
+   */
+  private async loadAnchorState(wsId: string | null | undefined) {
+    this.anchorHistory = {};
+    this.pivots = {};
+    if (!wsId) return;
+    try {
+      const res = await fetch(`${fileUrl(`${wsId}/concept.json`)}?t=${Date.now()}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        anchorHistory?: Partial<Record<AnchorDir, string[]>>;
+        pivots?: Partial<Record<AnchorDir, { x: number; y: number }>>;
+      };
+      if (data.anchorHistory) this.anchorHistory = data.anchorHistory;
+      if (data.pivots) this.pivots = data.pivots;
+    } catch {
+      /* no workspace concept yet — a fresh workspace has no history */
+    }
   }
 
   private async restoreConcept(targetId: string) {
@@ -3167,8 +3203,11 @@ export class SpriteToolScene extends Phaser.Scene {
       if (data.style !== undefined) this.styleIn.value = String(data.style);
       if (data.creativity !== undefined) this.creativityIn.value = String(data.creativity);
       if (data.subject) this.subjectSel.value = data.subject;
-      if (data.pivots) this.pivots = data.pivots;
-      if (data.anchorHistory) this.anchorHistory = data.anchorHistory;
+      // Anchor history and pivots are NOT taken from here: this reads both the
+      // forge session's file and the workspace's, and the session copy (whose
+      // history is empty) used to win — wiping undo on every reopen and then
+      // overwriting the real history on the next edit. loadAnchorState reads
+      // them from the workspace that owns the anchor files, only.
       if (data.concept) {
         this.concept = data.concept;
         this.syncStyleSel();
@@ -4930,6 +4969,7 @@ export class SpriteToolScene extends Phaser.Scene {
       if (this.sessionId !== sheet.id && !this.imagePromptIn.value) {
         await this.restoreConcept(sheet.id);
       }
+      await this.loadAnchorState(sheet.id);
 
       await this.restoreClips(ws);
       this.ensureAnimPanels();
@@ -5033,6 +5073,7 @@ export class SpriteToolScene extends Phaser.Scene {
         } catch {
           /* grouping unavailable — stay workspace-scoped */
         }
+        await this.loadAnchorState(id);
         await this.restoreClips(ws);
         this.ensureAnimPanels();
         this.setStage('editing');
