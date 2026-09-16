@@ -1787,6 +1787,14 @@ export class SpriteToolScene extends Phaser.Scene {
     file: string,
     onDeleted: () => void,
     onRestore: () => void,
+    /**
+     * `file` is the drawing IN USE, not a saved snapshot. It is never
+     * deletable; its one action is UNDO — put the newest saved version back
+     * and discard this drawing. (A user who deleted "the two bad results" from
+     * the old snapshot-only strip actually deleted the original and the first
+     * result, while the second stayed in use.)
+     */
+    current?: { onUndo: () => void },
   ) {
     const wsId = this.activeWs()?.wsId;
     const backdrop = document.createElement('div');
@@ -1800,7 +1808,7 @@ export class SpriteToolScene extends Phaser.Scene {
     titleRow.className = 'g-modal-titlerow';
     const title = document.createElement('div');
     title.className = 'g-modal-title';
-    title.textContent = `${dir.toUpperCase()} ANCHOR · SAVED VERSION`;
+    title.textContent = `${dir.toUpperCase()} ANCHOR · ${current ? 'CURRENT DRAWING' : 'SAVED VERSION'}`;
     const closeX = document.createElement('div');
     closeX.className = 'g-modal-close';
     closeX.textContent = '✕';
@@ -1810,24 +1818,41 @@ export class SpriteToolScene extends Phaser.Scene {
     const preview = document.createElement('div');
     preview.className = 'g-version-preview';
     const img = document.createElement('img');
-    img.src = fileUrl(`${wsId}/${file}`);
+    img.src = `${fileUrl(`${wsId}/${file}`)}${current ? `?v=${this.anchorStamp}` : ''}`;
     preview.appendChild(img);
+
+    // Say what this image IS and what the buttons will do to it — the strip
+    // alone made a saved original look like a disposable result.
+    const saved = this.anchorHistory[dir] ?? [];
+    const hint = document.createElement('div');
+    hint.className = 'g-hint';
+    hint.textContent = current
+      ? saved.length > 0
+        ? 'IN USE NOW. UNDO PUTS BACK THE DRAWING FROM BEFORE THE LAST CHANGE AND DISCARDS THIS ONE.'
+        : 'IN USE NOW. NOTHING TO UNDO — NO EARLIER VERSION IS SAVED.'
+      : 'SAVED FROM BEFORE A CHANGE — NOT THE DRAWING IN USE. DELETING REMOVES IT FOR GOOD. TO THROW AWAY A BAD RESULT, OPEN NOW AND UNDO.';
 
     const row = document.createElement('div');
     row.className = 'g-modal-row';
     const restore = document.createElement('genvy-button') as GenvyButton;
     restore.setAttribute('variant', 'accent');
-    restore.setAttribute('label', '↺ RESTORE');
+    restore.setAttribute('label', current ? '↶ UNDO LAST CHANGE' : '↺ RESTORE');
     const del = document.createElement('genvy-button') as GenvyButton;
     del.setAttribute('variant', 'danger');
     del.setAttribute('label', '✕ DELETE');
-    for (const b of [restore, del]) {
-      b.style.flex = '1 1 50%';
-      b.style.minWidth = '0';
+    if (current) {
+      restore.style.flex = '1 1 100%';
+      restore.disabled = saved.length === 0;
+      row.append(restore);
+    } else {
+      for (const b of [restore, del]) {
+        b.style.flex = '1 1 50%';
+        b.style.minWidth = '0';
+      }
+      row.append(restore, del);
     }
-    row.append(restore, del);
 
-    modal.append(titleRow, preview, row);
+    modal.append(titleRow, preview, hint, row);
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
     // The parent modal's Escape handler stands down while this is open.
@@ -1857,7 +1882,8 @@ export class SpriteToolScene extends Phaser.Scene {
     restore.onClick(() => {
       UISound.play('click');
       close();
-      onRestore();
+      if (current) current.onUndo();
+      else onRestore();
     });
     del.onClick(() => {
       UISound.play('click');
@@ -1921,14 +1947,29 @@ export class SpriteToolScene extends Phaser.Scene {
   }
 
   /** Put a previous drawing back in place (snapshotting the current one first). */
-  private async restoreAnchor(dir: AnchorDir, file: string) {
+  /**
+   * Put a saved version back as the drawing in use.
+   *
+   * Restore (default) keeps the drawing it replaces as a new saved version, so
+   * it is reversible. `discardCurrent` is UNDO: the drawing in use is the bad
+   * result being thrown away, so it is NOT saved, and the restored version
+   * leaves the history (it is the drawing in use again).
+   */
+  private async restoreAnchor(dir: AnchorDir, file: string, opts: { discardCurrent?: boolean } = {}) {
     const ws = this.activeWs();
     if (!ws?.wsId) return;
     const wsId = ws.wsId;
-    await this.busy(`RESTORING THE ${dir.toUpperCase()} ANCHOR...`, async () => {
-      HudShell.setBusyLabel('SWAPPING IN THE SAVED ANCHOR (FREE)...');
-      await this.snapshotAnchor(wsId, dir); // the replaced one stays recoverable
+    const undo = opts.discardCurrent === true;
+    await this.busy(`${undo ? 'UNDOING THE LAST CHANGE TO' : 'RESTORING'} THE ${dir.toUpperCase()} ANCHOR...`, async () => {
+      HudShell.setBusyLabel(undo ? 'PUTTING THE PREVIOUS DRAWING BACK (FREE)...' : 'SWAPPING IN THE SAVED ANCHOR (FREE)...');
+      if (!undo) await this.snapshotAnchor(wsId, dir); // the replaced one stays recoverable
       await api.flip({ assetId: wsId, sourceFile: file, outName: this.anchorFile(dir), mirror: false });
+      if (undo) {
+        // The snapshot is the drawing in use again; its copy is redundant.
+        this.anchorHistory[dir] = (this.anchorHistory[dir] ?? []).filter((f) => f !== file);
+        this.persistConcept(wsId);
+        void api.deleteFile(wsId, file).catch(() => {});
+      }
       // The kept raw output belonged to the drawing just replaced — remove it
       // so a stale full-size copy never outlives its anchor.
       void api.deleteFile(wsId, `raw_${this.anchorFile(dir)}`).catch(() => {});
@@ -1944,10 +1985,11 @@ export class SpriteToolScene extends Phaser.Scene {
       await this.showAnchor(dir);
       UISound.play('confirm');
       const stale = this.staleViews.size;
+      const done = undo ? `LAST CHANGE TO THE ${dir.toUpperCase()} ANCHOR UNDONE` : `${dir.toUpperCase()} ANCHOR RESTORED`;
       HudShell.toast(
         primaryRestored && stale > 0
-          ? `${dir.toUpperCase()} ANCHOR RESTORED — ${stale} VIEW(S) STILL SHOW THE REPLACED LOOK, RE-FORGE THEM`
-          : `${dir.toUpperCase()} ANCHOR RESTORED`,
+          ? `${done} — ${stale} VIEW(S) STILL SHOW THE REPLACED LOOK, RE-FORGE THEM`
+          : done,
         primaryRestored && stale > 0 ? 'warn' : 'success',
       );
     });
@@ -2077,47 +2119,71 @@ export class SpriteToolScene extends Phaser.Scene {
     }
     optionsRow.append(sizeField, qualityField);
 
-    // History: click a previous drawing to put it back.
-    const history = this.anchorHistory[dir] ?? [];
+    // Versions: the drawing IN USE first (tagged NOW), then every saved
+    // snapshot newest-first (−1 = from before the last change). Showing only
+    // snapshots made a saved original look like a disposable result.
     const historyField = (() => {
       const strip = document.createElement('div');
       strip.className = 'g-anchor-history';
-      // Clicking a version opens a second modal on top (preview + RESTORE /
-      // DELETE / CANCEL) — a stray click can neither overwrite nor destroy.
+      const label = document.createElement('label'); // same markup as field()
+      // Clicking a version opens a second modal on top (preview + actions) —
+      // a stray click can neither overwrite nor destroy.
+      const tile = (src: string, tag: string, tip: string, onOpen: () => void) => {
+        const thumb = document.createElement('div');
+        thumb.className = 'g-anchor-history-thumb';
+        thumb.title = tip;
+        const img = document.createElement('img');
+        img.src = src;
+        const tagEl = document.createElement('div');
+        tagEl.className = 'g-variant-tag';
+        tagEl.textContent = tag;
+        thumb.append(img, tagEl);
+        thumb.addEventListener('mouseenter', () => UISound.play('hover'));
+        thumb.addEventListener('click', () => {
+          UISound.play('click');
+          onOpen();
+        });
+        strip.appendChild(thumb);
+      };
       const paint = () => {
         strip.replaceChildren();
+        const wsId = this.activeWs()?.wsId;
         const list = this.anchorHistory[dir] ?? [];
-        for (const file of list) {
-          const thumb = document.createElement('div');
-          thumb.className = 'g-anchor-history-thumb';
-          thumb.title = 'OPEN THIS VERSION';
-          const img = document.createElement('img');
-          img.src = fileUrl(`${this.activeWs()?.wsId}/${file}`);
-          thumb.appendChild(img);
-          thumb.addEventListener('mouseenter', () => UISound.play('hover'));
-          thumb.addEventListener('click', () => {
-            UISound.play('click');
-            this.openAnchorVersionModal(
-              dir,
-              file,
-              () => paint(), // deleted: refresh the strip in place
-              () => {
-                close(); // restoring: the re-forge modal has served its purpose
-                void this.restoreAnchor(dir, file);
-              },
-            );
-          });
-          strip.appendChild(thumb);
-        }
-        if (list.length === 0) {
-          const empty = document.createElement('div');
-          empty.className = 'g-hint';
-          empty.textContent = 'NO SAVED VERSIONS YET';
-          strip.appendChild(empty);
-        }
+        label.textContent = `VERSIONS · NOW + ${list.length} SAVED · CLICK ONE`;
+        const undo = () => {
+          close(); // the re-forge modal has served its purpose
+          void this.restoreAnchor(dir, list[0]!, { discardCurrent: true });
+        };
+        tile(
+          `${fileUrl(`${wsId}/${this.anchorFile(dir)}`)}?v=${this.anchorStamp}`,
+          'NOW',
+          'THE DRAWING IN USE — OPEN TO UNDO THE LAST CHANGE',
+          () =>
+            this.openAnchorVersionModal(dir, this.anchorFile(dir), () => paint(), () => {}, { onUndo: undo }),
+        );
+        list.forEach((file, i) => {
+          tile(
+            fileUrl(`${wsId}/${file}`),
+            `−${i + 1}`,
+            i === 0 ? 'SAVED BEFORE THE LAST CHANGE' : `SAVED ${i + 1} CHANGES AGO`,
+            () =>
+              this.openAnchorVersionModal(
+                dir,
+                file,
+                () => paint(), // deleted: refresh the strip in place
+                () => {
+                  close(); // restoring: the re-forge modal has served its purpose
+                  void this.restoreAnchor(dir, file);
+                },
+              ),
+          );
+        });
       };
       paint();
-      return field(`PREVIOUS VERSIONS · CLICK ONE (${history.length})`, strip);
+      const wrap = document.createElement('div');
+      wrap.className = 'g-field';
+      wrap.append(label, strip);
+      return wrap;
     })();
 
     const row = document.createElement('div');
@@ -2135,7 +2201,7 @@ export class SpriteToolScene extends Phaser.Scene {
       field('PROVIDER', providerSel),
       modelField,
       optionsRow,
-      ...(history.length > 0 ? [historyField] : []),
+      historyField,
       row,
     );
     backdrop.appendChild(modal);
