@@ -62,6 +62,24 @@ describe("outputTokens: OpenAI's image calculator formula", () => {
     expect(outputTokens(FLARE, 1024, 1024, 'max')).toBe(7024);
   });
 
+  it("matches OpenAI's calculator for every tier at 1536x1024, token for token", () => {
+    // Read off the calculator, low → max.
+    const calculator = {
+      low: { tokens: 158, dollars: 0.00474 },
+      medium: { tokens: 343, dollars: 0.01029 },
+      high: { tokens: 1372, dollars: 0.04116 },
+      xhigh: { tokens: 2459, dollars: 0.07377 },
+      max: { tokens: 5488, dollars: 0.16464 },
+    } as const;
+    for (const q of IMAGE_QUALITY_TIERS) {
+      for (const model of [FLARE, SUNBURST]) {
+        expect(outputTokens(model, 1536, 1024, q)).toBe(calculator[q].tokens);
+        expect(outputTokens(model, 1024, 1536, q)).toBe(calculator[q].tokens);
+      }
+      expect(outputCents(FLARE, 'tall', q) / 100).toBeCloseTo(calculator[q].dollars, 9);
+    }
+  });
+
   it("names the tiers as 2.5 does: its max spends gpt-image-2's high budget", () => {
     expect(outputTokens(FLARE, 1536, 1024, 'max')).toBe(outputTokens('gpt-image-2', 1536, 1024, 'high'));
     expect(outputTokens(FLARE, 1536, 1024, 'high')).toBe(outputTokens('gpt-image-2', 1536, 1024, 'medium'));

@@ -77,8 +77,9 @@ const QUALITY_AXIS: Record<'gpt-image-2.5' | 'gpt-image-2', Record<ImageQualityT
 
 /**
  * Output tokens for one image — OpenAI's calculator formula, verified against
- * it: gpt-image-2.5 low is 158 tokens ($0.00474) at 1536x1024 and 196 tokens
- * ($0.00588) at 1024x1024; the same formula with gpt-image-2's constants
+ * it for every gpt-image-2.5 tier at 1536x1024 (low/medium/high/xhigh/max =
+ * 158/343/1372/2459/5488 tokens = $0.00474/$0.01029/$0.04116/$0.07377/$0.16464)
+ * and low at 1024x1024 (196 tokens, $0.00588); the same formula with gpt-image-2's constants
  * reproduces that model's published table. Output depends only on the canvas
  * and quality, so flare and sunburst price identically.
  *
