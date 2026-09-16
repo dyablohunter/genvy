@@ -75,6 +75,29 @@ const QUALITY_AXIS: Record<'gpt-image-2.5' | 'gpt-image-2', Record<ImageQualityT
   'gpt-image-2': { low: 16, medium: 48, high: 96, xhigh: 96, max: 96 },
 };
 
+const is25 = (model: string) => model.startsWith('gpt-image-2.5');
+
+/** The quality tiers a model actually offers: gpt-image-2.5 has five, gpt-image-2 three. */
+export function qualityTiers(model: string): ImageQualityTier[] {
+  return is25(model) ? [...IMAGE_QUALITY_TIERS] : ['low', 'medium', 'high'];
+}
+
+/**
+ * The tier a request will really run at: the asked-for tier when the model
+ * has it, else the highest tier the model has below it (xhigh/max → high on
+ * gpt-image-2). A stale pick from another model's picker can never send a
+ * tier the API rejects, and is priced as what actually runs.
+ */
+export function clampQuality(model: string, quality: ImageQualityTier): ImageQualityTier {
+  const tiers = qualityTiers(model);
+  if (tiers.includes(quality)) return quality;
+  for (let i = IMAGE_QUALITY_TIERS.indexOf(quality); i >= 0; i--) {
+    const tier = IMAGE_QUALITY_TIERS[i]!;
+    if (tiers.includes(tier)) return tier;
+  }
+  return 'low';
+}
+
 /**
  * Output tokens for one image — OpenAI's calculator formula, verified against
  * it for every gpt-image-2.5 tier at 1536x1024 (low/medium/high/xhigh/max =
@@ -89,7 +112,7 @@ const QUALITY_AXIS: Record<'gpt-image-2.5' | 'gpt-image-2', Record<ImageQualityT
  * the full q), which is why the canvas is part of every price key.
  */
 export function outputTokens(model: string, width: number, height: number, quality: ImageQualityTier): number {
-  const axis = QUALITY_AXIS[model.startsWith('gpt-image-2.5') ? 'gpt-image-2.5' : 'gpt-image-2'];
+  const axis = QUALITY_AXIS[is25(model) ? 'gpt-image-2.5' : 'gpt-image-2'];
   const q = axis[quality];
   const long = Math.max(width, height);
   const short = Math.min(width, height);
@@ -121,7 +144,6 @@ export const TYPICAL_PROMPT_TOKENS = 600;
  */
 export const EDIT_REFERENCE_SEED_CENTS = 1;
 
-const QUALITIES: readonly ImageQualityTier[] = IMAGE_QUALITY_TIERS;
 /** Rolling window: a price change on OpenAI's side shows up within ~20 calls. */
 const MAX_SAMPLES = 20;
 
@@ -185,12 +207,12 @@ class ImageCostBook {
     return { cents: seed, samples: 0 };
   }
 
-  /** The whole canvas x quality table for one model and op, for /api/health. */
+  /** The canvas x quality table for one model and op — only the tiers that model offers — for /api/health. */
   table(model: string, op: ImageOp): ImagePriceTable {
+    const tiers = qualityTiers(model);
     const row = (canvas: PriceCanvas) =>
-      Object.fromEntries(QUALITIES.map((q) => [q, this.estimate(model, op, canvas, q)])) as Record<
-        ImageQualityTier,
-        Entry
+      Object.fromEntries(tiers.map((q) => [q, this.estimate(model, op, canvas, q)])) as Partial<
+        Record<ImageQualityTier, Entry>
       >;
     return { square: row('square'), tall: row('tall') };
   }

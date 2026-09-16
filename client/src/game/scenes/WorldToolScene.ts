@@ -35,7 +35,7 @@ import { HudShell } from '../../hud/HudShell.js';
 import type { BusyStepState } from '../../hud/HudShell.js';
 import { UISound } from '../../hud/UISound.js';
 import { expectedDuration, recordDuration } from '../../hud/progress.js';
-import { modelTag, scaleFallback, timingTag } from '../../hud/imageModels.js';
+import { scaleFallback } from '../../hud/imageModels.js';
 import { goToScene, enterScene, registerAssetOpenHandlers } from '../../hud/transitions.js';
 import { api, fileUrl, ApiError } from '../../api/client.js';
 import { collection } from '../../state/collection.js';
@@ -3165,7 +3165,7 @@ export class WorldToolScene extends Phaser.Scene {
       },
       {
         key: `scene-modify:${controls.timingTag('edit')}`,
-        fallbackMs: scaleFallback(40000, controls.providerId(), 'edit'),
+        fallbackMs: scaleFallback(40000, controls.providerId(), 'edit', controls.modelFamily()),
       },
     );
   }
@@ -3214,6 +3214,9 @@ export class WorldToolScene extends Phaser.Scene {
     this.providerControls = new ProviderControls({
       workflow: 'anchor-generate', // a tileset sheet is a plain generation
       candidates: false, // the sheet IS the set; candidates would mean 4 sheets
+      // The sheet is ONE 4x6 grid call: only providers that can lay out a grid
+      // in one image can draw it (capability, not provider id).
+      eligible: (p) => p.capabilities.generate && p.capabilities.gridSheets !== false,
     });
     this.providerControls.onChange = () => {
       forgeBtn.setLabel(`2 · FORGE TILESET · ${this.providerControls?.costPreview() ?? ''}`);
@@ -3375,11 +3378,12 @@ export class WorldToolScene extends Phaser.Scene {
           'warn',
         );
       }
+      const controls = this.providerControls;
+      const blocked = controls?.blockedReason();
+      if (blocked) return HudShell.toast(blocked, 'error');
       await this.busy(statusHost, 'FORGING TILES · THIS TAKES A MINUTE...', async () => {
         UISound.play('generate');
-        // The tile sheet request names no provider, so the server default
-        // (OpenAI's generation model) draws it.
-        HudShell.setBusyLabel(`${modelTag(undefined, 'generate')} · DRAWING THE 4x6 TILE GRID...`);
+        HudShell.setBusyLabel(`${controls?.tag('generate') ?? 'GPT-IMAGE-2.5-FLARE'} · DRAWING THE 4x6 TILE GRID...`);
         const subjects = this.concept!.tileNames.length
           ? this.concept!.tileNames.join(', ')
           : this.concept!.imagePrompt;
@@ -3387,6 +3391,12 @@ export class WorldToolScene extends Phaser.Scene {
           prompt: `${this.concept!.imagePrompt}. Tiles in order: ${subjects}`,
           orientation: 'portrait',
           kind: 'tileset',
+          // The picker's provider, model and tier — the sheet used to ignore
+          // them and always run the server default at LOW.
+          provider: controls?.providerId(),
+          modelFamily: controls?.modelFamily(),
+          quality: controls?.quality(),
+          renderSize: controls?.renderSize(),
           // Re-forging writes the new sheet into the OPEN asset's directory.
           // Letting it land in a fresh folder left the asset pointing across
           // directories, and every later free re-cut read the old sheet.
@@ -3457,8 +3467,8 @@ export class WorldToolScene extends Phaser.Scene {
         // The concept did its job; the tools take over.
         this.setStage('edit');
       }, {
-        key: `tileset:image:${timingTag(undefined, 'generate')}`,
-        fallbackMs: scaleFallback(50000, undefined, 'generate'),
+        key: `tileset:image:${controls?.timingTag('generate') ?? 'openai'}`,
+        fallbackMs: scaleFallback(50000, controls?.providerId(), 'generate', controls?.modelFamily()),
       });
     });
 

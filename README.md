@@ -12,7 +12,7 @@ The creation process is designed to feel like a game: a sci-fi command center, h
 
 AI: **DeepSeek** (`deepseek-chat`, JSON mode) for concepts/configs/layouts. Images go through a provider registry:
 
-- **OpenAI gpt-image-2.5** (the default) — two variants at the same token rates, split by job: **`gpt-image-2.5-flare`** (fast) draws new images — anchor candidates, tile grids, scenes — and **`gpt-image-2.5-sunburst`** (tighter subject preservation) does every reference edit — anchor turns, animation sheets, frame repair, panel edits. Canvases are 1024x1536 / 1536x1024 / 1024x1024; quality is one of OpenAI's five tiers, **low · medium · high · xhigh · max** (low by default).
+- **OpenAI gpt-image** (the default) — pick the model for each operation in its panel's MODEL select: **`gpt-image-2.5-flare`** (fast), **`gpt-image-2.5-sunburst`** (holds the subject tightest on edits) or **`gpt-image-2`**, all at the same token rates. Without a pick, flare draws new images (anchor candidates, tile grids, scenes) and sunburst does reference edits (anchor turns, animation sheets, frame repair, panel edits). QUALITY sits beside PROVIDER and lists the picked model's own tiers — gpt-image-2.5: **low · medium · high · xhigh · max**; gpt-image-2: **low · medium · high** — each priced for that model (low by default). The tiers are named differently across generations: gpt-image-2 `medium` costs what 2.5 `high` does, and gpt-image-2 `high` what 2.5 `max` does. Canvases are 1024x1536 / 1536x1024 / 1024x1024.
 - **Retro Diffusion** (optional key) — true pixel art and a dedicated animation endpoint.
 - **Local ComfyUI** (optional, free) — pose-conditioned renders via the `local-inference/` service; see `docs/local-inference-setup.md`.
 
@@ -40,10 +40,10 @@ The creation process is designed to feel like a game: a sci-fi command center, h
    OPENAI_API_KEY="..."
    # optional
    RETRODIFFUSION_API_KEY="..."
-   OPENAI_IMAGE_MODEL="gpt-image-2.5-flare"     # new images (default)
-   OPENAI_EDIT_MODEL="gpt-image-2.5-sunburst"   # reference edits (default)
+   OPENAI_IMAGE_MODEL="gpt-image-2.5-flare"     # default model for new images
+   OPENAI_EDIT_MODEL="gpt-image-2.5-sunburst"   # default model for reference edits
    ```
-   There is no bare `gpt-image-2.5` model id — always name a variant. Swap either setting to A/B the variants; prices and progress timings are tracked per model.
+   These only set the defaults — every panel's MODEL select overrides them per operation, no restart needed. There is no bare `gpt-image-2.5` model id — always name a variant. Prices and progress timings are tracked per model.
 2. `npm install`
 3. `npm run dev` — server on :3020, client on http://localhost:5173
 

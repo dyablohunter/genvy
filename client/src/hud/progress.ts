@@ -59,7 +59,7 @@ export function durationStats(): Record<string, Bucket> {
  * generation shows a determinate bar even if its call site forgot to wrap it
  * (see CLAUDE.md "Progress feedback").
  */
-export function aiImageBucket(body: { kind?: string; frames?: number; provider?: string }): {
+export function aiImageBucket(body: { kind?: string; frames?: number; provider?: string; modelFamily?: string }): {
   key: string;
   fallbackMs: number;
   label: string;
@@ -67,11 +67,11 @@ export function aiImageBucket(body: { kind?: string; frames?: number; provider?:
   const kind = body.kind ?? 'raw';
   const op = opForKind(kind);
   // Name and time the MODEL: flare and sunburst differ by ~2x in latency.
-  const name = modelTag(body.provider, op) ?? (body.provider ?? 'openai').toUpperCase();
-  const tag = timingTag(body.provider, op);
+  const name = modelTag(body.provider, op, body.modelFamily) ?? (body.provider ?? 'openai').toUpperCase();
+  const tag = timingTag(body.provider, op, body.modelFamily);
   const bucket = (b: { key: string; fallbackMs: number; label: string }) => ({
     ...b,
-    fallbackMs: scaleFallback(b.fallbackMs, body.provider, op),
+    fallbackMs: scaleFallback(b.fallbackMs, body.provider, op, body.modelFamily),
   });
   switch (kind) {
     case 'anchor':

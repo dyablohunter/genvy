@@ -5,7 +5,9 @@ this applies its lessons to tilesets and levels instead of rediscovering them.
 
 ## What World Maker is today (M1)
 
-One `gpt-image-2.5-flare` call draws a **4×6 grid of 24 tiles** from a DeepSeek-planned
+One image call draws a **4×6 grid of 24 tiles** — on the provider, model and quality
+picked in the tileset panel (default `gpt-image-2.5-flare` at LOW; only grid-capable
+providers are offered) — from a DeepSeek-planned
 subject list; the grid is cut into tiles, saved as a `tileset` asset, and
 painted onto a Phaser tilemap that saves as a `world`. It works, and it has
 exactly the failure modes the sprite pipeline already diagnosed.

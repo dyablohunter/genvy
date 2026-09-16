@@ -23,7 +23,17 @@ import {
 import { HudShell, type BusyStepState } from '../../hud/HudShell.js';
 import { UISound } from '../../hud/UISound.js';
 import { expectedDuration, recordDuration } from '../../hud/progress.js';
-import { modelTag, scaleFallback, timingTag } from '../../hud/imageModels.js';
+import {
+  fillModelOptions,
+  fillQualityOptions,
+  formatPrice,
+  modelTag,
+  priceEntry,
+  qualityTiersFor,
+  scaleFallback,
+  splitRow,
+  timingTag,
+} from '../../hud/imageModels.js';
 import { goToScene, enterScene, registerAssetOpenHandlers } from '../../hud/transitions.js';
 import { attachBackdrop } from '../backdrop.js';
 import { api, fileUrl, ApiError } from '../../api/client.js';
@@ -342,11 +352,15 @@ export class SpriteToolScene extends Phaser.Scene {
   private providers: ImageProviderStatus[] = [];
   private genProviderSel = document.createElement('select');
   private animProviderSel = document.createElement('select');
-  // Model pickers for multi-model providers (local ComfyUI families) —
-  // hidden while the chosen provider hosts only one model.
+  // Model pickers, one per job, for providers that offer several models
+  // (OpenAI's gpt-image models, local ComfyUI families) — hidden otherwise.
+  // Blueprint: anchor candidates. Anchor chain: turns + strip props. Animation:
+  // sheets + frame repair.
   private genModelSel = document.createElement('select');
+  private anchorModelSel = document.createElement('select');
   private animModelSel = document.createElement('select');
   private genModelField: HTMLElement | null = null;
+  private anchorModelField: HTMLElement | null = null;
   private animModelField: HTMLElement | null = null;
   // How many candidates a grid-incapable provider renders (each is a full
   // generation, so fewer = proportionally faster). Hidden for grid providers.
@@ -364,6 +378,10 @@ export class SpriteToolScene extends Phaser.Scene {
   // default on purpose — the higher tiers cost 4x/15x per image.
   private genQualitySel = document.createElement('select');
   private genQualityField: HTMLElement | null = null;
+  private anchorQualitySel = document.createElement('select');
+  private anchorQualityField: HTMLElement | null = null;
+  private animQualitySel = document.createElement('select');
+  private animQualityField: HTMLElement | null = null;
   private framePreset = FRAME_PRESETS[2]!; // 8 · 4x2 default
   private notesIn = textArea('', NOTES_PLACEHOLDER);
   private styleIn = rangeInput(30, 0, 100);
@@ -502,8 +520,10 @@ export class SpriteToolScene extends Phaser.Scene {
     this.genProviderSel = document.createElement('select');
     this.animProviderSel = document.createElement('select');
     this.genModelSel = document.createElement('select');
+    this.anchorModelSel = document.createElement('select');
     this.animModelSel = document.createElement('select');
     this.genModelField = null;
+    this.anchorModelField = null;
     this.animModelField = null;
     this.candidateCountSel = document.createElement('select');
     this.candidateCountField = null;
@@ -513,6 +533,10 @@ export class SpriteToolScene extends Phaser.Scene {
     this.animSizeField = null;
     this.genQualitySel = document.createElement('select');
     this.genQualityField = null;
+    this.anchorQualitySel = document.createElement('select');
+    this.anchorQualityField = null;
+    this.animQualitySel = document.createElement('select');
+    this.animQualityField = null;
     this.anchors = { south: false, west: false, east: false, north: false };
     this.anchorModal?.remove();
     this.anchorModal = null;
@@ -642,7 +666,7 @@ export class SpriteToolScene extends Phaser.Scene {
   /** The chosen render size, only for providers that expose one (the local service). */
   private renderSizeFor(providerSel: HTMLSelectElement, sizeSel: HTMLSelectElement): number | undefined {
     const p = this.providers.find((x) => x.id === providerSel.value);
-    return p?.models?.length ? Number(sizeSel.value) || undefined : undefined;
+    return p?.capabilities.renderSize ? Number(sizeSel.value) || undefined : undefined;
   }
 
   /**
@@ -661,52 +685,83 @@ export class SpriteToolScene extends Phaser.Scene {
     to.value = wanted;
   }
 
-  /** Model pickers track their provider pickers: shown only for multi-model providers. */
+  /**
+   * Model and quality pickers track their provider pickers, one set per job:
+   * the blueprint draws anchor candidates (generate), the anchor chain turns
+   * and strips anchors (edit, on the blueprint's provider), and the animation
+   * forge draws sheets and repairs frames (edit). Each model select defaults to
+   * the provider's own model for that op; each QUALITY select holds the PICKED
+   * model's tiers, priced for that op — gpt-image-2 has three, gpt-image-2.5 five.
+   */
   private refreshModelSelects() {
-    this.fillModelSelect(this.genModelSel, this.genModelField, this.genProviderSel);
-    this.fillModelSelect(this.animModelSel, this.animModelField, this.animProviderSel);
-    // Render size rides with the model field: same providers, same visibility.
-    if (this.genSizeField) this.genSizeField.style.display = this.genModelField?.style.display ?? 'none';
-    if (this.animSizeField) this.animSizeField.style.display = this.animModelField?.style.display ?? 'none';
-    this.fillQualitySelect();
+    const gen = this.providerById(this.genProviderSel.value);
+    const anim = this.providerById(this.animProviderSel.value);
+    this.showField(this.genModelField, fillModelOptions(this.genModelSel, gen, 'anchor-generate', 'generate'));
+    this.showField(this.anchorModelField, fillModelOptions(this.anchorModelSel, gen, 'anchor-directional', 'edit'));
+    this.showField(this.animModelField, fillModelOptions(this.animModelSel, anim, 'animation-frame', 'edit'));
+    // A choosable render canvas is a provider capability (local GPU), not a model one.
+    this.showField(this.genSizeField, !!gen?.capabilities.renderSize);
+    this.showField(this.animSizeField, !!anim?.capabilities.renderSize);
+    this.showField(
+      this.genQualityField,
+      fillQualityOptions(this.genQualitySel, gen, this.genFamily(), 'generate', 'tall'),
+    );
+    this.showField(
+      this.anchorQualityField,
+      fillQualityOptions(this.anchorQualitySel, gen, this.anchorFamily(), 'edit', 'tall'),
+    );
+    this.showField(
+      this.animQualityField,
+      fillQualityOptions(this.animQualitySel, anim, this.animFamily(), 'edit', 'tall'),
+    );
     // Candidate count applies only where candidates are rendered one by one
     // (capability, not provider id): grid providers always draw all four in
     // one call, so the choice would be a lie there.
-    const gen = this.providers.find((x) => x.id === this.genProviderSel.value);
     const perCandidate = !!gen && gen.capabilities.gridSheets === false;
     if (this.candidateCountField) this.candidateCountField.style.display = perCandidate ? '' : 'none';
     this.updateForgeLabel?.();
   }
 
-  /** Quality select tracks the gen provider: shown only when it prices by tier, LOW first and default. */
-  private fillQualitySelect() {
-    const p = this.providers.find((x) => x.id === this.genProviderSel.value);
-    const levels = p?.capabilities.qualityLevels ?? [];
-    if (this.genQualityField) this.genQualityField.style.display = levels.length > 0 ? '' : 'none';
-    if (levels.length === 0) return;
-    const previous = this.genQualitySel.value;
-    this.genQualitySel.innerHTML = '';
-    // The tiers differ by ~35x, so the picker states the cost instead of
-    // hinting at it — the provider's own learned price for a portrait anchor
-    // generation ("~" until a billed call has priced that tier).
-    // OpenAI's own tier names, so the picker reads like their docs and calculator.
-    for (const l of levels) {
-      const opt = document.createElement('option');
-      opt.value = l;
-      const entry = p?.prices?.generate.tall[l];
-      opt.textContent = entry
-        ? `${l.toUpperCase()} · ${entry.samples === 0 ? '~' : ''}${(entry.cents / 100).toFixed(3)}`
-        : l.toUpperCase();
-      this.genQualitySel.appendChild(opt);
-    }
-    this.genQualitySel.value = (levels as string[]).includes(previous) ? previous : 'low';
+  private providerById(id: string): ImageProviderStatus | undefined {
+    return this.providers.find((p) => p.id === id);
   }
 
-  /** The chosen quality tier, only when the gen provider actually prices by one. */
-  private qualityFor(): ImageQualityTier | undefined {
-    const p = this.providers.find((x) => x.id === this.genProviderSel.value);
-    if (!p?.capabilities.qualityLevels?.length) return undefined;
-    return (this.genQualitySel.value as ImageQualityTier) || undefined;
+  private showField(el: HTMLElement | null, show: boolean) {
+    if (el) el.style.display = show ? '' : 'none';
+  }
+
+  /** The model each job runs on (undefined for single-model providers). */
+  private genFamily(): string | undefined {
+    return this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-generate');
+  }
+  private anchorFamily(): string | undefined {
+    return this.modelFamilyFor(this.genProviderSel, this.anchorModelSel, 'anchor-directional');
+  }
+  private animFamily(): string | undefined {
+    return this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'animation-frame');
+  }
+  private repairFamily(): string | undefined {
+    return this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'repair');
+  }
+
+  /** A QUALITY select's tier — only when the picked model actually has tiers. */
+  private qualityFrom(
+    sel: HTMLSelectElement,
+    providerSel: HTMLSelectElement,
+    family: string | undefined,
+  ): ImageQualityTier | undefined {
+    return qualityTiersFor(this.providerById(providerSel.value), family).length
+      ? (sel.value as ImageQualityTier) || undefined
+      : undefined;
+  }
+  private genQuality() {
+    return this.qualityFrom(this.genQualitySel, this.genProviderSel, this.genFamily());
+  }
+  private anchorQuality() {
+    return this.qualityFrom(this.anchorQualitySel, this.genProviderSel, this.anchorFamily());
+  }
+  private animQuality() {
+    return this.qualityFrom(this.animQualitySel, this.animProviderSel, this.animFamily());
   }
 
   /** Chosen candidate count (1-4), only when the provider renders per-candidate. */
@@ -714,52 +769,6 @@ export class SpriteToolScene extends Phaser.Scene {
     const p = this.providers.find((x) => x.id === this.genProviderSel.value);
     if (!p || p.capabilities.gridSheets !== false) return undefined;
     return Number(this.candidateCountSel.value) || undefined;
-  }
-
-  /**
-   * Untested families are LISTED but DISABLED (like offline providers): the
-   * roster is visible so the roadmap reads in the UI, and nothing unverified
-   * can be picked until it has run on real hardware.
-   */
-  private fillModelSelect(
-    sel: HTMLSelectElement,
-    fieldEl: HTMLElement | null,
-    providerSel: HTMLSelectElement,
-  ) {
-    const provider = this.providers.find((p) => p.id === providerSel.value);
-    const show = !!provider?.models?.length;
-    if (fieldEl) fieldEl.style.display = show ? '' : 'none';
-    if (!show) return;
-    const previous = sel.value;
-    sel.innerHTML = '';
-    // Families cover different jobs (Z-Image draws & animates, HiDream turns
-    // anchors). A family is still selectable when it misses one — the route
-    // hands that job to a family that has it — but the gap is named here so
-    // "why did my pick not run this?" is answered in the picker itself.
-    const SKILL: { workflow: string; tag: string }[] = [
-      { workflow: 'animation-frame', tag: 'ANIM' },
-      { workflow: 'anchor-directional', tag: 'TURNS' },
-    ];
-    for (const m of provider!.models!) {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      const missing = SKILL.filter((s) => !m.workflows.includes(s.workflow)).map((s) => s.tag);
-      const tags = [
-        ...(m.heavy ? ['VERY SLOW'] : []),
-        ...(missing.length > 0 ? [`NO ${missing.join('/')}`] : []),
-      ];
-      opt.textContent = !m.verified
-        ? `${m.label.toUpperCase()} · UNTESTED`
-        : !m.available
-          ? `${m.label.toUpperCase()} · MODELS MISSING`
-          : tags.length > 0
-            ? `${m.label.toUpperCase()} · ${tags.join(' · ')}`
-            : m.label.toUpperCase();
-      opt.disabled = !m.verified || !m.available;
-      sel.appendChild(opt);
-    }
-    const usable = provider!.models!.filter((m) => m.verified && m.available);
-    sel.value = usable.some((m) => m.id === previous) ? previous : usable[0]?.id ?? '';
   }
 
   /**
@@ -908,7 +917,7 @@ export class SpriteToolScene extends Phaser.Scene {
    * flare generates, sunburst edits, and the label names the one that runs.
    */
   private providerTag(id?: string, family?: string, op: ImageOp = 'generate'): string {
-    const named = modelTag(id, op);
+    const named = modelTag(id, op, family);
     if (named) return named;
     const p = id ? this.providers.find((x) => x.id === id) : undefined;
     if (!p) return 'GPT-IMAGE-2.5';
@@ -1063,14 +1072,11 @@ export class SpriteToolScene extends Phaser.Scene {
       // while per-candidate providers bill each one. Free providers say FREE.
       // The price is the provider's own portrait-generation figure from
       // /api/health ("~" until a billed call has priced that tier).
-      const provider = this.providers.find((x) => x.id === this.genProviderSel.value);
-      const entry = provider?.prices?.generate.tall[this.qualityFor() ?? 'low'];
+      const provider = this.providerById(this.genProviderSel.value);
+      const quality = this.genQuality();
+      const entry = quality ? priceEntry(provider, this.genFamily(), 'generate', 'tall', quality) : undefined;
       const calls = provider?.capabilities.gridSheets === false ? n : 1;
-      const cost = provider?.free
-        ? 'FREE'
-        : entry
-          ? `${entry.samples === 0 ? '~' : ''}$${((entry.cents / 100) * calls).toFixed(3)}`
-          : '';
+      const cost = provider?.free ? 'FREE' : entry ? formatPrice(entry, calls) : '';
       // setLabel, not setAttribute: GenvyButton reads the label attribute
       // only at mount — attribute writes after that are silently ignored.
       forgeBtn.setLabel(
@@ -1079,7 +1085,8 @@ export class SpriteToolScene extends Phaser.Scene {
     };
     this.candidateCountSel.addEventListener('change', updateForgeLabel);
     this.genProviderSel.addEventListener('change', updateForgeLabel);
-    this.genModelSel.addEventListener('change', updateForgeLabel);
+    // A model switch changes the tiers and prices on offer, not just the label.
+    this.genModelSel.addEventListener('change', () => this.refreshModelSelects());
     this.genQualitySel.addEventListener('change', updateForgeLabel);
     this.updateForgeLabel = updateForgeLabel;
     this.forgeVariantsBtn = forgeBtn;
@@ -1101,23 +1108,11 @@ export class SpriteToolScene extends Phaser.Scene {
       field('IMAGE PROMPT', this.imagePromptIn),
       field('ART STYLE', this.styleSel),
       field('STYLE · STYLIZED ◄─► REALISTIC', this.styleIn),
-      (() => {
-        // Provider + quality share the line 50/50; quality hides for
-        // providers without tiers and the provider takes the full width.
-        const row = document.createElement('div');
-        row.style.display = 'flex';
-        row.style.gap = '8px';
-        const providerField = field('PROVIDER', this.genProviderSel);
-        this.genQualityField = field('QUALITY', this.genQualitySel);
-        for (const f of [providerField, this.genQualityField]) {
-          f.style.flex = '1 1 50%';
-          f.style.minWidth = '0';
-        }
-        this.genQualityField.style.display = 'none';
-        row.append(providerField, this.genQualityField);
-        return row;
-      })(),
-      (this.genModelField = field('LOCAL MODEL', this.genModelSel)),
+      splitRow(
+        field('PROVIDER', this.genProviderSel),
+        (this.genQualityField = field('QUALITY', this.genQualitySel)),
+      ),
+      (this.genModelField = field('MODEL', this.genModelSel)),
       (() => {
         // Render size + candidates share one line, 50/50; each keeps its own
         // visibility (RD shows candidates but no size), and a lone visible
@@ -1137,6 +1132,7 @@ export class SpriteToolScene extends Phaser.Scene {
       forgeBtn,
     );
     this.genModelField.style.display = 'none';
+    this.genQualityField.style.display = 'none';
     this.genSizeField!.style.display = 'none';
     this.candidateCountField!.style.display = 'none';
     SpriteToolScene.fillSizeSelect(this.genSizeSel);
@@ -1152,7 +1148,11 @@ export class SpriteToolScene extends Phaser.Scene {
     }
     this.genProviderSel.addEventListener('change', () => {
       this.syncProviderSelection(this.genProviderSel, this.animProviderSel);
-      this.syncProviderSelection(this.genModelSel, this.animModelSel);
+      // Local families mirror across panels (one GPU pick); API models are
+      // chosen per job, so each panel keeps its own.
+      if (!this.providerById(this.genProviderSel.value)?.modelIds) {
+        this.syncProviderSelection(this.genModelSel, this.animModelSel);
+      }
       this.refreshModelSelects();
     });
 
@@ -1189,7 +1189,7 @@ export class SpriteToolScene extends Phaser.Scene {
       await this.busy(`FORGING ${count} VARIANT${count > 1 ? 'S' : ''} · THIS TAKES A MINUTE...`, async () => {
         UISound.play('generate');
         HudShell.setBusyLabel(
-          `${this.providerTag(this.providerFor(this.genProviderSel), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-generate'))} · DRAWING ${count} NEUTRAL SOUTH-ANCHOR CANDIDATE${count > 1 ? 'S' : ''}...`,
+          `${this.providerTag(this.providerFor(this.genProviderSel), this.genFamily())} · DRAWING ${count} NEUTRAL SOUTH-ANCHOR CANDIDATE${count > 1 ? 'S' : ''}...`,
         );
         if (chips.length > 0) HudShell.setBusySteps(chips);
         // Never write into an opened asset's folder — that work would be
@@ -1206,8 +1206,8 @@ export class SpriteToolScene extends Phaser.Scene {
           styleId: this.styleId(),
           characterName: this.nameIn.value.trim() || this.concept?.name,
           provider: this.providerFor(this.genProviderSel),
-          modelFamily: this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-generate'),
-          quality: this.qualityFor(),
+          modelFamily: this.genFamily(),
+          quality: this.genQuality(),
           variantCount: this.candidateCount(),
           renderSize: this.renderSizeFor(this.genProviderSel, this.genSizeSel),
           subject: this.subjectSel.value,
@@ -1244,8 +1244,8 @@ export class SpriteToolScene extends Phaser.Scene {
       }, {
         // Per provider, model AND count: one gpt-image-2.5 grid call vs N
         // composed local renders differ by an order of magnitude — never share averages.
-        key: `anchor:candidates:${timingTag(this.genProviderSel.value, 'generate')}:${count}:${this.renderSizeFor(this.genProviderSel, this.genSizeSel) ?? 'std'}`,
-        fallbackMs: scaleFallback(12000 * count, this.genProviderSel.value, 'generate'),
+        key: `anchor:candidates:${timingTag(this.genProviderSel.value, 'generate', this.genFamily())}:${count}:${this.renderSizeFor(this.genProviderSel, this.genSizeSel) ?? 'std'}`,
+        fallbackMs: scaleFallback(12000 * count, this.genProviderSel.value, 'generate', this.genFamily()),
       }, {
         // The server's op layer says which candidate is rendering — light
         // the chips from truth, not from guesses.
@@ -1651,7 +1651,25 @@ export class SpriteToolScene extends Phaser.Scene {
     hint.className = 'g-hint';
     this.anchorHint = hint;
 
-    panel.append(grid, forgeBtn, resetBtn, pivotBtn, viewsBtn, hint);
+    // Turns and STRIP PROPS/FX are edits on the blueprint's provider; their
+    // model and tier are picked here, separately from the candidates'.
+    this.anchorModelField = field('MODEL', this.anchorModelSel);
+    this.anchorQualityField = field('QUALITY', this.anchorQualitySel);
+    this.anchorModelField.style.display = 'none';
+    this.anchorQualityField.style.display = 'none';
+    this.anchorModelSel.addEventListener('change', () => {
+      UISound.play('click');
+      this.refreshModelSelects();
+    });
+    panel.append(
+      grid,
+      splitRow(this.anchorModelField, this.anchorQualityField),
+      forgeBtn,
+      resetBtn,
+      pivotBtn,
+      viewsBtn,
+      hint,
+    );
     forgeBtn.onClick(() => void this.forgeDirectionalAnchors());
     resetBtn.onClick(() => void this.stripAnchorFx());
     return panel;
@@ -2025,30 +2043,6 @@ export class SpriteToolScene extends Phaser.Scene {
     }
   }
 
-  /** Fill a model select for one provider id (modal copies of the panel pickers). */
-  private fillModelSelectFor(sel: HTMLSelectElement, providerId: string, workflow: string) {
-    const provider = this.providers.find((p) => p.id === providerId);
-    sel.innerHTML = '';
-    const models = provider?.models ?? [];
-    for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      const can = m.workflows.includes(workflow);
-      opt.textContent = !m.verified
-        ? `${m.label.toUpperCase()} · UNTESTED`
-        : !m.available
-          ? `${m.label.toUpperCase()} · MODELS MISSING`
-          : can
-            ? m.label.toUpperCase()
-            : `${m.label.toUpperCase()} · CANNOT TURN ANCHORS`;
-      opt.disabled = !m.verified || !m.available || !can;
-      sel.appendChild(opt);
-    }
-    const usable = models.filter((m) => m.verified && m.available && m.workflows.includes(workflow));
-    sel.value = usable[0]?.id ?? '';
-    return models.length > 0;
-  }
-
   /**
    * Centered popup: everything one anchor re-forge needs — art-direction
    * notes, what it is drawn FROM, which provider/model/size/quality does the
@@ -2101,35 +2095,33 @@ export class SpriteToolScene extends Phaser.Scene {
       baseSel.appendChild(opt);
     }
 
-    // Provider/model/size/quality for THIS edit, seeded from the panels.
+    // Provider/model/size/quality for THIS edit, seeded from the anchor chain.
     const providerSel = this.genProviderSel.cloneNode(true) as HTMLSelectElement;
     providerSel.value = this.genProviderSel.value;
-    const modelSel = document.createElement('select');
+    const modelSel = this.anchorModelSel.cloneNode(true) as HTMLSelectElement;
+    modelSel.value = this.anchorModelSel.value;
     const sizeSel = this.genSizeSel.cloneNode(true) as HTMLSelectElement;
     sizeSel.value = this.genSizeSel.value;
-    const qualitySel = this.genQualitySel.cloneNode(true) as HTMLSelectElement;
-    qualitySel.value = this.genQualitySel.value;
-    const modelField = field('LOCAL MODEL', modelSel);
+    const qualitySel = this.anchorQualitySel.cloneNode(true) as HTMLSelectElement;
+    qualitySel.value = this.anchorQualitySel.value;
+    const modelField = field('MODEL', modelSel);
     const sizeField = field('RENDER SIZE', sizeSel);
     const qualityField = field('QUALITY', qualitySel);
+    // Tiers and prices belong to the MODEL: refill them whenever it changes.
+    const syncModalModel = () => {
+      const p = this.providerById(providerSel.value);
+      const family = this.modelFamilyFor(providerSel, modelSel, 'anchor-directional');
+      qualityField.style.display = fillQualityOptions(qualitySel, p, family, 'edit', 'tall') ? '' : 'none';
+    };
     const syncModalProvider = () => {
-      const p = this.providers.find((x) => x.id === providerSel.value);
-      const hasModels = this.fillModelSelectFor(modelSel, providerSel.value, 'anchor-directional');
-      modelField.style.display = hasModels ? '' : 'none';
-      sizeField.style.display = hasModels ? '' : 'none';
-      qualityField.style.display = p?.capabilities.qualityLevels?.length ? '' : 'none';
+      const p = this.providerById(providerSel.value);
+      modelField.style.display = fillModelOptions(modelSel, p, 'anchor-directional', 'edit') ? '' : 'none';
+      sizeField.style.display = p?.capabilities.renderSize ? '' : 'none';
+      syncModalModel();
     };
     providerSel.addEventListener('change', syncModalProvider);
+    modelSel.addEventListener('change', syncModalModel);
     syncModalProvider();
-
-    const optionsRow = document.createElement('div');
-    optionsRow.style.display = 'flex';
-    optionsRow.style.gap = '8px';
-    for (const f of [sizeField, qualityField]) {
-      f.style.flex = '1 1 50%';
-      f.style.minWidth = '0';
-    }
-    optionsRow.append(sizeField, qualityField);
 
     // Versions: the drawing IN USE first (tagged NOW), then every saved
     // snapshot newest-first (−1 = from before the last change). Showing only
@@ -2210,9 +2202,9 @@ export class SpriteToolScene extends Phaser.Scene {
       title,
       field(isPrimary ? 'WHAT SHOULD CHANGE' : 'EXTRA INDICATIONS', notes),
       ...(isPrimary ? [rippleHint] : [field('BASED ON', baseSel)]),
-      field('PROVIDER', providerSel),
+      splitRow(field('PROVIDER', providerSel), qualityField),
       modelField,
-      optionsRow,
+      sizeField,
       historyField,
       row,
     );
@@ -2250,7 +2242,7 @@ export class SpriteToolScene extends Phaser.Scene {
         base: isPrimary ? ('current' as const) : (baseSel.value as 'current' | 'primary'),
         provider: providerSel.value || undefined,
         modelFamily: modelSel.value || undefined,
-        renderSize: modelField.style.display === 'none' ? undefined : Number(sizeSel.value) || undefined,
+        renderSize: sizeField.style.display === 'none' ? undefined : Number(sizeSel.value) || undefined,
         quality:
           qualityField.style.display === 'none'
             ? undefined
@@ -2286,7 +2278,7 @@ export class SpriteToolScene extends Phaser.Scene {
     const fromPrimary = opts.base === 'primary';
     const provider = opts.provider ?? this.editProvider();
     const family =
-      opts.modelFamily ?? this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional');
+      opts.modelFamily ?? this.anchorFamily();
     await this.busy(`RE-FORGING THE ${dir.toUpperCase()} ANCHOR...`, async () => {
       UISound.play('generate');
       HudShell.setBusyLabel(
@@ -2303,7 +2295,7 @@ export class SpriteToolScene extends Phaser.Scene {
         // primary anchor, so the reference and the flag move together.
         refine: !fromPrimary,
         modelFamily: family,
-        quality: opts.quality ?? this.qualityFor(),
+        quality: opts.quality ?? this.anchorQuality(),
         renderSize: opts.renderSize,
         assetId: wsId,
         referenceFile: `${wsId}/${this.anchorFile(fromPrimary ? primary : dir)}`,
@@ -2352,8 +2344,8 @@ export class SpriteToolScene extends Phaser.Scene {
       UISound.play('complete');
       HudShell.toast(`${dir.toUpperCase()} ANCHOR RE-FORGED — ITS CLIPS STILL USE THE OLD POSE UNTIL REMADE`, 'success');
     }, {
-      key: `anchor:regen:${timingTag(provider, 'edit')}`,
-      fallbackMs: scaleFallback(38000, provider, 'edit'),
+      key: `anchor:regen:${timingTag(provider, 'edit', family)}`,
+      fallbackMs: scaleFallback(38000, provider, 'edit', family),
     });
   }
 
@@ -2623,15 +2615,15 @@ export class SpriteToolScene extends Phaser.Scene {
             await this.deriveAnchorView(wsId, view, free.from, free);
           } else {
             HudShell.setBusyLabel(
-              `${i + 1}/${plan.length} ${this.providerTag(this.editProvider(), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'), 'edit')} · EDITING THE ${primary.toUpperCase()} ANCHOR INTO THE ${view.toUpperCase()} VIEW...`,
+              `${i + 1}/${plan.length} ${this.providerTag(this.editProvider(), this.anchorFamily(), 'edit')} · EDITING THE ${primary.toUpperCase()} ANCHOR INTO THE ${view.toUpperCase()} VIEW...`,
             );
             await api.aiImage({
               prompt: '',
               orientation: 'portrait',
               kind: 'anchorDirectional',
               assetId: wsId,
-              modelFamily: this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'),
-              quality: this.qualityFor(),
+              modelFamily: this.anchorFamily(),
+              quality: this.anchorQuality(),
               referenceFile: `${wsId}/${this.anchorFile(primary)}`,
               // Every view comes back at the primary's size and orientation.
               matchSizeOf: `${wsId}/${this.anchorFile(primary)}`,
@@ -2660,8 +2652,8 @@ export class SpriteToolScene extends Phaser.Scene {
         HudShell.toast('ANCHOR CHAIN COMPLETE — ANIMATIONS FORGE FROM THE MATCHING VIEW', 'success');
       },
       {
-        key: `anchor:views:${timingTag(this.editProvider(), 'edit')}:${paid}`,
-        fallbackMs: Math.max(4000, scaleFallback(38000 * paid, this.editProvider(), 'edit')),
+        key: `anchor:views:${timingTag(this.editProvider(), 'edit', this.anchorFamily())}:${paid}`,
+        fallbackMs: Math.max(4000, scaleFallback(38000 * paid, this.editProvider(), 'edit', this.anchorFamily())),
       },
     );
     } finally {
@@ -2719,14 +2711,14 @@ export class SpriteToolScene extends Phaser.Scene {
     await this.busy(`STRIPPING PROPS & FX FROM THE ${primary.toUpperCase()} ANCHOR...`, async () => {
       UISound.play('generate');
       HudShell.setBusyLabel(
-        `${this.providerTag(this.editProvider(), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'), 'edit')} · REMOVING PROPS, GLOWS & EFFECTS FROM THE ANCHOR...`,
+        `${this.providerTag(this.editProvider(), this.anchorFamily(), 'edit')} · REMOVING PROPS, GLOWS & EFFECTS FROM THE ANCHOR...`,
       );
       await api.aiImage({
         prompt: '',
         orientation: 'portrait',
         kind: 'neutralReset',
-        modelFamily: this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'),
-        quality: this.qualityFor(),
+        modelFamily: this.anchorFamily(),
+        quality: this.anchorQuality(),
         assetId: wsId,
         referenceFile: `${wsId}/${this.anchorFile(primary)}`,
         effect: props.length > 0 ? props.join(', ') : undefined,
@@ -2754,8 +2746,8 @@ export class SpriteToolScene extends Phaser.Scene {
         gate.pass && stale === 0 ? 'success' : 'error',
       );
     }, {
-      key: `anchor:reset:${timingTag(this.editProvider(), 'edit')}`,
-      fallbackMs: scaleFallback(38000, this.editProvider(), 'edit'),
+      key: `anchor:reset:${timingTag(this.editProvider(), 'edit', this.anchorFamily())}`,
+      fallbackMs: scaleFallback(38000, this.editProvider(), 'edit', this.anchorFamily()),
     });
   }
 
@@ -2862,21 +2854,31 @@ export class SpriteToolScene extends Phaser.Scene {
       this.dirField,
       field('FRAMES', chipRow),
       field('MOTION NOTES', this.notesIn),
-      field('PROVIDER', this.animProviderSel),
-      (this.animModelField = field('LOCAL MODEL', this.animModelSel)),
+      splitRow(
+        field('PROVIDER', this.animProviderSel),
+        (this.animQualityField = field('QUALITY', this.animQualitySel)),
+      ),
+      (this.animModelField = field('MODEL', this.animModelSel)),
       (this.animSizeField = field('RENDER SIZE', this.animSizeSel)),
       forgeBtn,
       freeRow,
       freeHint,
     );
     this.animModelField.style.display = 'none';
+    this.animQualityField.style.display = 'none';
     this.animSizeField.style.display = 'none';
+    this.animModelSel.addEventListener('change', () => {
+      UISound.play('click');
+      this.refreshModelSelects();
+    });
     SpriteToolScene.fillSizeSelect(this.animSizeSel);
     this.animProviderSel.addEventListener('change', () => {
       // Anchor work reads the blueprint select — mirror the visible choice
       // into it so a LOCAL pick here can never bill the hidden default.
       this.syncProviderSelection(this.animProviderSel, this.genProviderSel);
-      this.syncProviderSelection(this.animModelSel, this.genModelSel);
+      if (!this.providerById(this.animProviderSel.value)?.modelIds) {
+        this.syncProviderSelection(this.animModelSel, this.genModelSel);
+      }
       this.refreshModelSelects();
     });
     mirrorBtn.onClick(() => void this.deriveSelectedClip());
@@ -3268,7 +3270,7 @@ export class SpriteToolScene extends Phaser.Scene {
       ];
       HudShell.setBusySteps(steps);
       HudShell.setBusyLabel(
-        `${this.providerTag(this.providerFor(this.animProviderSel), this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'animation-frame'), 'edit')} · GENERATING ${cat.toUpperCase()} SHEET — VALIDATION GATE & RETRY MAY RUN...`,
+        `${this.providerTag(this.providerFor(this.animProviderSel), this.animFamily(), 'edit')} · GENERATING ${cat.toUpperCase()} SHEET — VALIDATION GATE & RETRY MAY RUN...`,
       );
       const rawFile = `anim_${cat}_raw.png`;
       const sheetFile = `anim_${cat}_sheet.png`;
@@ -3291,7 +3293,8 @@ export class SpriteToolScene extends Phaser.Scene {
         styleId: this.styleId(),
         subject: this.subjectSel.value,
         provider: this.providerFor(this.animProviderSel),
-        modelFamily: this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'animation-frame'),
+        modelFamily: this.animFamily(),
+        quality: this.animQuality(),
         renderSize: this.renderSizeFor(this.animProviderSel, this.animSizeSel),
         // Identity for prompt-borne models (Z-Image): the blueprint's
         // appearance text rides along; adapter-based providers ignore it.
@@ -3391,8 +3394,8 @@ export class SpriteToolScene extends Phaser.Scene {
       // renders per frame — their durations have nothing in common, so they
       // must not share a learned average (progress-feedback: per-model buckets).
       {
-        key: `anim:${timingTag(this.animProviderSel.value, 'edit')}:${count}:${this.renderSizeFor(this.animProviderSel, this.animSizeSel) ?? 'std'}`,
-        fallbackMs: scaleFallback(30000 + count * 2500, this.animProviderSel.value, 'edit'),
+        key: `anim:${timingTag(this.animProviderSel.value, 'edit', this.animFamily())}:${count}:${this.renderSizeFor(this.animProviderSel, this.animSizeSel) ?? 'std'}`,
+        fallbackMs: scaleFallback(30000 + count * 2500, this.animProviderSel.value, 'edit', this.animFamily()),
       },
     );
   }
@@ -3598,7 +3601,7 @@ export class SpriteToolScene extends Phaser.Scene {
           steps[k]!.state = 'active';
           HudShell.setBusySteps(steps);
           HudShell.setBusyLabel(
-            `${k + 1}/${flagged.length} ${this.providerTag(this.providerFor(this.animProviderSel), this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'repair'), 'edit')} · ` +
+            `${k + 1}/${flagged.length} ${this.providerTag(this.providerFor(this.animProviderSel), this.repairFamily(), 'edit')} · ` +
               `REDRAWING FRAME ${index + 1} AGAINST THE ${dir.toUpperCase()} ANCHOR...`,
           );
           try {
@@ -3606,7 +3609,8 @@ export class SpriteToolScene extends Phaser.Scene {
               assetId: ws.wsId!,
               rawFile: clip.rawFile,
               referenceFile: `${ws.wsId}/${refFile}`,
-              modelFamily: this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'repair'),
+              modelFamily: this.repairFamily(),
+              quality: this.animQuality(),
               boxes,
               frameIndexes: [index],
               category: baseName(clip.cat),
@@ -3661,8 +3665,8 @@ export class SpriteToolScene extends Phaser.Scene {
         );
       },
       {
-        key: `repair:frame:${timingTag(this.animProviderSel.value, 'edit')}:${flagged.length}`,
-        fallbackMs: scaleFallback(22000 * flagged.length, this.animProviderSel.value, 'edit'),
+        key: `repair:frame:${timingTag(this.animProviderSel.value, 'edit', this.repairFamily())}:${flagged.length}`,
+        fallbackMs: scaleFallback(22000 * flagged.length, this.animProviderSel.value, 'edit', this.repairFamily()),
       },
     );
   }

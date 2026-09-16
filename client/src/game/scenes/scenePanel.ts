@@ -310,7 +310,7 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
       },
       {
         key: `scene:${controls.timingTag('generate')}:${controls.renderSize() ?? 'std'}`,
-        fallbackMs: scaleFallback(45000, controls.providerId(), 'generate'),
+        fallbackMs: scaleFallback(45000, controls.providerId(), 'generate', controls.modelFamily()),
       },
     );
   });

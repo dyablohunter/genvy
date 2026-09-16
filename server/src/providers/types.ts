@@ -97,6 +97,8 @@ export interface ProviderCapabilities {
   independentFrames?: boolean;
   /** longest supported output side in pixels */
   maxSize: number;
+  /** Takes a choosable square render canvas via `renderSize` (local GPU). */
+  renderSize?: boolean;
   /** Quality tiers the provider prices/renders by; pickers show a select when present. */
   qualityLevels?: ImageQualityTier[];
   /** rough cost in cents, before spending */
@@ -114,6 +116,10 @@ export interface ProviderModelInfo {
   /** Its weights are installed in the backing ComfyUI right now. */
   available: boolean;
   workflows: string[];
+  /** Quality tiers this model offers; pickers refill per model. */
+  qualityLevels?: ImageQualityTier[];
+  /** This model's per-image prices by op, canvas and tier. */
+  prices?: Record<ImageOp, ImagePriceTable>;
 }
 
 export interface ImageProvider {
@@ -125,6 +131,12 @@ export interface ImageProvider {
   modelIds?: Record<ImageOp, string>;
   /** Current per-image prices by op, canvas and quality (learned from billed calls) — the table every cost label reads. */
   prices?: () => Record<ImageOp, ImagePriceTable>;
+  /**
+   * The model id a call of `op` will run on, given the user's pick
+   * (`modelFamily`): the pick when this provider offers it, else its default
+   * for that op. Stage labels name it. Absent for single-model providers.
+   */
+  resolveModel?: (op: ImageOp, requested?: string) => string;
   /** Whether the required .env key / service is present. Offline providers stay registered so the HUD can list them dimmed. */
   live: boolean;
   /** What the user should do when this provider is offline (defaults to the API-key hint). */

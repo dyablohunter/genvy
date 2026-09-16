@@ -6,6 +6,7 @@ import {
   EDIT_REFERENCE_SEED_CENTS,
   TYPICAL_PROMPT_TOKENS,
   canvasOf,
+  clampQuality,
   imageCosts,
   outputCents,
   outputTokens,
@@ -213,8 +214,55 @@ describe('OpenAI provider: flare draws, sunburst edits, usage is billed exactly'
     await p.edit(editReq);
     expect(calls).toEqual([{ url: 'https://api.openai.com/v1/images/edits', model: SUNBURST }]);
     expect(p.capabilities.costEstimate(editReq)).toBeCloseTo(6.9, 6);
-    expect(p.prices!().edit.tall.low).toEqual({ cents: expect.closeTo(6.9, 6), samples: 1 });
+    expect(p.prices!().edit.tall.low!).toEqual({ cents: expect.closeTo(6.9, 6), samples: 1 });
     // Generation previews are untouched by an edit's bill.
-    expect(p.prices!().generate.tall.low.samples).toBe(0);
+    expect(p.prices!().generate.tall.low!.samples).toBe(0);
+  });
+
+  it("runs the user's model pick for either op, and falls back to the op default otherwise", async () => {
+    const p = provider();
+    const ref = [{ image: Buffer.from(ONE_PX_PNG, 'base64'), role: 'identity' as const }];
+    await p.generate({ prompt: 'x', orientation: 'portrait', modelFamily: 'gpt-image-2' });
+    await p.edit({ prompt: 'x', orientation: 'portrait', modelFamily: FLARE, references: ref });
+    await p.generate({ prompt: 'x', orientation: 'portrait', modelFamily: 'gpt-image-1' }); // not offered
+    expect(calls.map((c) => c.model)).toEqual(['gpt-image-2', FLARE, FLARE]);
+    expect(p.resolveModel!('edit', 'nonsense')).toBe(SUNBURST);
+  });
+
+  it('lists every model with its own tiers and prices', () => {
+    const models = provider().models!;
+    expect(models.map((m) => m.id)).toEqual([FLARE, SUNBURST, 'gpt-image-2']);
+    const g2 = models.find((m) => m.id === 'gpt-image-2')!;
+    expect(g2.qualityLevels).toEqual(['low', 'medium', 'high']);
+    expect(Object.keys(g2.prices!.generate.tall)).toEqual(['low', 'medium', 'high']);
+    // gpt-image-2 medium spends what 2.5 high does: 1,372 output tokens at 1536x1024.
+    expect(g2.prices!.generate.tall.medium!.cents).toBeCloseTo(
+      models.find((m) => m.id === FLARE)!.prices!.generate.tall.high!.cents,
+      9,
+    );
+    expect(models.find((m) => m.id === SUNBURST)!.qualityLevels).toEqual([...IMAGE_QUALITY_TIERS]);
+  });
+
+  it("clamps a tier the chosen model lacks, and prices what actually runs", async () => {
+    const p = provider();
+    const bodies: string[] = [];
+    vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
+      bodies.push(init.body);
+      return new Response(JSON.stringify({ data: [{ b64_json: ONE_PX_PNG }] }), { status: 200 });
+    });
+    await p.generate({ prompt: 'x', orientation: 'portrait', modelFamily: 'gpt-image-2', quality: 'max' });
+    expect(JSON.parse(bodies[0]!).quality).toBe('high');
+    const maxOnG2 = p.capabilities.costEstimate({ prompt: 'x', orientation: 'portrait', modelFamily: 'gpt-image-2', quality: 'max' });
+    const highOnG2 = p.capabilities.costEstimate({ prompt: 'x', orientation: 'portrait', modelFamily: 'gpt-image-2', quality: 'high' });
+    expect(maxOnG2).toBe(highOnG2);
+  });
+});
+
+describe('clampQuality', () => {
+  it('keeps tiers a model has and steps down to the nearest one it has', () => {
+    expect(clampQuality(FLARE, 'max')).toBe('max');
+    expect(clampQuality('gpt-image-2', 'medium')).toBe('medium');
+    expect(clampQuality('gpt-image-2', 'xhigh')).toBe('high');
+    expect(clampQuality('gpt-image-2', 'max')).toBe('high');
   });
 });

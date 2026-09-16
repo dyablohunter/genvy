@@ -1,7 +1,17 @@
 import type { ImageOp, ImageProviderStatus, ImageQualityTier } from '@genvy/shared';
 import { field } from './components.js';
 import { UISound } from './UISound.js';
-import { modelTag, timingTag } from './imageModels.js';
+import {
+  fillModelOptions,
+  fillQualityOptions,
+  formatPrice,
+  modelInfo,
+  modelTag,
+  priceEntry,
+  qualityTiersFor,
+  splitRow,
+  timingTag,
+} from './imageModels.js';
 
 /**
  * The provider / model / render-size / quality / candidates control set the
@@ -51,7 +61,7 @@ export class ProviderControls {
   private canvas: 'portrait' | 'landscape' | 'square' = 'landscape';
 
   constructor(private opts: ProviderControlsOptions) {
-    this.modelField = field('LOCAL MODEL', this.modelSel);
+    this.modelField = field('MODEL', this.modelSel);
     this.sizeField = field('RENDER SIZE', this.sizeSel);
     this.qualityField = field('QUALITY', this.qualitySel);
     this.candidateField = field('CANDIDATES', this.candidateSel);
@@ -94,55 +104,25 @@ export class ProviderControls {
     return this.opts.workflow === 'anchor-generate' ? 'generate' : 'edit';
   }
 
+  private priceCanvas(): 'square' | 'tall' {
+    return this.canvas === 'square' ? 'square' : 'tall';
+  }
+
   /**
-   * Price of one image at a quality, for the current canvas and op, read from
-   * the provider's own table in /api/health. The server learns that table from
-   * billed calls, so the preview and the booked spend come from ONE source —
-   * there is no client copy to fall out of step. `approx` means no real call
-   * has priced this bucket yet.
+   * (Re)fill the quality picker with the PICKED MODEL's tiers, each priced for
+   * the current canvas from /api/health — the server learns those prices from
+   * billed calls, so the preview and the booked spend come from ONE source.
    */
-  private price(
-    quality: string | undefined,
-    op: ImageOp = this.defaultOp(),
-  ): { dollars: number; approx: boolean } {
-    const tier = (quality ?? 'low') as ImageQualityTier;
-    const entry = this.current()?.prices?.[op][this.canvas === 'square' ? 'square' : 'tall'][tier];
-    return entry ? { dollars: entry.cents / 100, approx: entry.samples === 0 } : { dollars: 0, approx: true };
-  }
-
-  private formatPrice(p: { dollars: number; approx: boolean }, calls = 1): string {
-    return `${p.approx ? '~' : ''}$${(p.dollars * calls).toFixed(3)}`;
-  }
-
-  /** (Re)label the quality picker with prices for the current canvas. */
-  private fillQualityOptions(force = false) {
-    const levels = this.current()?.capabilities.qualityLevels ?? [];
-    if (levels.length === 0) return;
-    if (!force && this.qualitySel.options.length === levels.length) return;
-    const previous = this.qualitySel.value;
-    this.qualitySel.innerHTML = '';
-    for (const l of levels) {
-      const opt = document.createElement('option');
-      opt.value = l;
-      opt.textContent = `${l.toUpperCase()} · ${this.formatPrice(this.price(l))}`;
-      this.qualitySel.appendChild(opt);
-    }
-    this.qualitySel.value = levels.some((l) => l === previous) ? previous : 'low';
+  private fillQualityOptions(_force = false) {
+    fillQualityOptions(this.qualitySel, this.current(), this.modelFamily(), this.defaultOp(), this.priceCanvas());
   }
 
   /** The rows to append into a panel, in order. */
   elements(): HTMLElement[] {
     if (this.fields.length === 0) {
       const providerField = field('PROVIDER', this.providerSel);
-      // Provider + quality share a line; size + candidates share the next.
-      const row1 = document.createElement('div');
-      row1.style.display = 'flex';
-      row1.style.gap = '8px';
-      for (const f of [providerField, this.qualityField]) {
-        f.style.flex = '1 1 50%';
-        f.style.minWidth = '0';
-      }
-      row1.append(providerField, this.qualityField);
+      // Provider and quality share a line, 60/40; size + candidates the next.
+      const row1 = splitRow(providerField, this.qualityField);
 
       const row2 = document.createElement('div');
       row2.style.display = 'flex';
@@ -196,41 +176,16 @@ export class ProviderControls {
 
   private refreshVisibility() {
     const p = this.current();
-    const models = p?.models ?? [];
-    // Local families: list them all, but name what each cannot do and refuse
-    // the ones that are untested or missing their weights.
-    if (models.length > 0) {
-      const previous = this.modelSel.value;
-      this.modelSel.innerHTML = '';
-      for (const m of models) {
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        const can = m.workflows.includes(this.opts.workflow);
-        const tags = [
-          ...(m.heavy ? ['VERY SLOW'] : []),
-          ...(can ? [] : ['CANNOT DO THIS JOB']),
-        ];
-        opt.textContent = !m.verified
-          ? `${m.label.toUpperCase()} · UNTESTED`
-          : !m.available
-            ? `${m.label.toUpperCase()} · MODELS MISSING`
-            : tags.length
-              ? `${m.label.toUpperCase()} · ${tags.join(' · ')}`
-              : m.label.toUpperCase();
-        opt.disabled = !m.verified || !m.available || !can;
-        this.modelSel.appendChild(opt);
-      }
-      const usable = models.filter(
-        (m) => m.verified && m.available && m.workflows.includes(this.opts.workflow),
-      );
-      this.modelSel.value = usable.some((m) => m.id === previous) ? previous : usable[0]?.id ?? '';
-    }
-    this.modelField.style.display = models.length > 0 ? '' : 'none';
-    this.sizeField.style.display = models.length > 0 ? '' : 'none';
-    this.qualityField.style.display = p?.capabilities.qualityLevels?.length ? '' : 'none';
+    // Every model the provider offers (OpenAI's three, local families), with
+    // the ones that cannot do this job named and disabled; the default is the
+    // provider's own model for this op.
+    const hasModels = fillModelOptions(this.modelSel, p, this.opts.workflow, this.defaultOp());
+    this.modelField.style.display = hasModels ? '' : 'none';
+    this.sizeField.style.display = p?.capabilities.renderSize ? '' : 'none';
     this.candidateField.style.display =
       this.opts.candidates && p?.capabilities.gridSheets === false ? '' : 'none';
-
+    // Tiers follow the model: gpt-image-2 has three, gpt-image-2.5 five.
+    this.qualityField.style.display = qualityTiersFor(p, this.modelFamily()).length ? '' : 'none';
     this.fillQualityOptions();
   }
 
@@ -249,11 +204,11 @@ export class ProviderControls {
   }
 
   renderSize(): number | undefined {
-    return this.current()?.models?.length ? Number(this.sizeSel.value) || undefined : undefined;
+    return this.current()?.capabilities.renderSize ? Number(this.sizeSel.value) || undefined : undefined;
   }
 
   quality(): ImageQualityTier | undefined {
-    return this.current()?.capabilities.qualityLevels?.length
+    return qualityTiersFor(this.current(), this.modelFamily()).length
       ? (this.qualitySel.value as ImageQualityTier)
       : undefined;
   }
@@ -265,14 +220,15 @@ export class ProviderControls {
       : undefined;
   }
 
-  /** "FREE" or a price like "$0.005" ("~$0.006" while unlearned) for `imageCalls` images of `op`. */
+  /** "FREE" or the picked model's price like "$0.005" ("~$0.006" while unlearned) for `imageCalls` images of `op`. */
   costPreview(imageCalls = 1, op: ImageOp = this.defaultOp()): string {
     const p = this.current();
     if (!p) return '';
     if (p.free) return 'FREE';
-    const per = this.price(this.quality(), op);
+    const quality = this.quality();
+    const entry = quality ? priceEntry(p, this.modelFamily(), op, this.priceCanvas(), quality) : undefined;
     const calls = p.capabilities.gridSheets === false ? (this.candidates() ?? 1) * imageCalls : imageCalls;
-    return per.dollars ? this.formatPrice(per, calls) : '';
+    return entry ? formatPrice(entry, calls) : '';
   }
 
   /**
@@ -285,7 +241,7 @@ export class ProviderControls {
     if (!p) return null;
     if (!p.live) return `${p.name.toUpperCase()} IS OFFLINE — PICK ANOTHER PROVIDER`;
     if (p.models?.length && !this.modelFamily()) {
-      return `NO LOCAL MODEL CAN DO THIS JOB — PICK ANOTHER PROVIDER OR MODEL`;
+      return `NO MODEL CAN DO THIS JOB — PICK ANOTHER PROVIDER OR MODEL`;
     }
     return null;
   }
@@ -294,16 +250,16 @@ export class ProviderControls {
   tag(op: ImageOp = this.defaultOp()): string {
     const p = this.current();
     // Providers that split models per op (OpenAI) name the one that runs.
-    const named = modelTag(p?.id, op);
-    if (named || !p) return named ?? 'GPT-IMAGE-2.5';
     const family = this.modelFamily();
-    const model = family ? p.models?.find((m) => m.id === family) : undefined;
+    const named = modelTag(p?.id, op, family);
+    if (named || !p) return named ?? 'GPT-IMAGE-2.5';
+    const model = modelInfo(p, family);
     const name = model ? model.label.toUpperCase() : p.name.toUpperCase();
     return p.free ? `${name} (FREE)` : name;
   }
 
   /** Timing-bucket segment for `op`: the provider plus the model that runs it. */
   timingTag(op: ImageOp = this.defaultOp()): string {
-    return timingTag(this.providerId(), op);
+    return timingTag(this.providerId(), op, this.modelFamily());
   }
 }

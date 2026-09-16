@@ -82,6 +82,7 @@ export class ProviderRegistry {
         animation: p.capabilities.animation,
         gridSheets: p.capabilities.gridSheets,
         maxSize: p.capabilities.maxSize,
+        ...(p.capabilities.renderSize ? { renderSize: true } : {}),
         ...(p.capabilities.qualityLevels ? { qualityLevels: p.capabilities.qualityLevels } : {}),
       },
     }));

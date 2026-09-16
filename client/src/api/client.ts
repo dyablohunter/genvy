@@ -131,7 +131,13 @@ export const api = {
   /** Change, merge or extend scene panels; costs one render per section. */
   sceneModify: (body: import('@genvy/shared').SceneModifyRequest) =>
     announceAiWork(
-      { prompt: body.instruction ?? '', orientation: 'landscape' },
+      {
+        prompt: body.instruction ?? '',
+        orientation: 'landscape',
+        kind: 'sceneCutout', // an edit of the drawn panel, timed and named as one
+        provider: body.provider,
+        modelFamily: body.modelFamily,
+      },
       () =>
         bumpUsage(
           request<import('@genvy/shared').SceneModifyResult>('POST', '/api/ai/scene-modify', body),

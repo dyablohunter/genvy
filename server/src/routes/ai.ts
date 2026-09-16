@@ -139,8 +139,8 @@ const EDIT_KINDS = new Set(['animation', 'anchorDirectional', 'neutralReset', 's
  * kind of call when the provider splits them (flare draws, sunburst edits),
  * otherwise the provider's name.
  */
-function workerName(provider: ImageProvider, op: ImageOp): string {
-  return (provider.modelIds?.[op] ?? provider.name).toUpperCase();
+function workerName(provider: ImageProvider, op: ImageOp, requestedModel?: string): string {
+  return (provider.resolveModel?.(op, requestedModel) ?? provider.name).toUpperCase();
 }
 
 export function registerAiRoutes(app: FastifyInstance, library: Library) {
@@ -210,6 +210,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
         style,
         purpose: 'repair' as const, // local providers route this to img2img, not a re-imagining
         modelFamily: b.modelFamily,
+        quality: b.quality,
         references: [{ image: reference, role: 'identity' as const }],
         // Reported cost/balance beats our estimate when the provider gives it.
         onBilled: (info: { cents?: number; balanceCents?: number }) => {
@@ -323,7 +324,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
       tileset: 'DRAWING THE TILE GRID',
       scene: 'PAINTING THE SCENE',
     };
-    activity.begin(`${workerName(provider, kind && EDIT_KINDS.has(kind) ? 'edit' : 'generate')} · ${WORK[kind ?? 'raw'] ?? 'DRAWING'}...`);
+    activity.begin(`${workerName(provider, kind && EDIT_KINDS.has(kind) ? 'edit' : 'generate', req.body.modelFamily)} · ${WORK[kind ?? 'raw'] ?? 'DRAWING'}...`);
     try {
     let png: Buffer;
     let attemptsUsed = 0;
@@ -615,7 +616,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
         const cells: pipe.RawImage[] = [];
         for (let i = 0; i < count; i++) {
           activity.update({
-            label: `${workerName(provider, 'generate')} · CANDIDATE ${i + 1} OF ${count}...`,
+            label: `${workerName(provider, 'generate', req.body.modelFamily)} · CANDIDATE ${i + 1} OF ${count}...`,
             step: i + 1,
             steps: count,
           });
@@ -694,7 +695,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
       'horizontal',
     );
 
-    activity.begin(`${workerName(provider, 'edit')} · MODIFYING THE PANEL...`);
+    activity.begin(`${workerName(provider, 'edit', b.modelFamily)} · MODIFYING THE PANEL...`);
     let reportedExact = false;
     const onBilled = (info: { cents?: number; balanceCents?: number }) => {
       if (info.cents !== undefined) reportedExact = true;

@@ -18,16 +18,16 @@ Every AI request — image, video, or text; API provider or local inference — 
    full on completion (`HudShell.showBusy(label, expectedMs)`).
 2. **Update its stage text at every step** via `HudShell.setBusyLabel()`, in the
    form `"<i>/<n> <WHAT IS WORKING> · <WHAT IT IS DOING>"` — name the model or
-   service that actually runs (`GPT-IMAGE-2.5-FLARE` for generations,
-   `GPT-IMAGE-2.5-SUNBURST` for edits — use `modelTag(provider, op)`; `DEEPSEEK`,
-   `RETRO DIFFUSION`, `LOCAL COMFYUI`), and
+   service that actually runs — the user's model pick, e.g. `GPT-IMAGE-2`,
+   `GPT-IMAGE-2.5-SUNBURST` (use `modelTag(provider, op, modelFamily)`); `DEEPSEEK`,
+   `RETRO DIFFUSION`, `LOCAL COMFYUI` — and
    say what it is producing in the user's terms. Free local steps get their own
    numbered stage; mark them so the user knows they cost nothing.
 3. **Use a duration bucket keyed by what drives the duration** — operation plus
-   shape plus provider/model (`timingTag(provider, op)`, e.g.
-   `anim:openai:gpt-image-2.5-sunburst:8:std`), never an asset id, or the average
-   never converges. Pass `scaleFallback(ms, provider, op)` as the fallback so an
-   unlearned bucket starts near the model's real speed.
+   shape plus provider and the picked model (`timingTag(provider, op, modelFamily)`,
+   e.g. `anim:openai:gpt-image-2.5-sunburst:8:std`), never an asset id, or the
+   average never converges. Pass `scaleFallback(ms, provider, op, modelFamily)` as
+   the fallback so an unlearned bucket starts near the model's real speed.
 
 4. **Show per-unit progress when an operation has parts.** A job made of N
    frames, anchors or stages renders a chip row via `HudShell.setBusySteps()` —
@@ -57,10 +57,11 @@ implement it behind the existing helpers, and keep the API the same.
 Done so far: determinate bar paced by learned per-operation averages; stage text
 naming the model/service; an API-layer safety net that guarantees a determinate
 bar for every image request; per-unit step chips; spend + provider-reported
-balance in the header; per-model buckets and labels for OpenAI (flare generates,
-sunburst edits — `client/src/hud/imageModels.ts`: `timingTag`, `modelTag`, and
-`scaleFallback` for unlearned first runs); cost previews learned from billed
-token usage, served by `/api/health`.
+balance in the header; the user picks the model per operation, and buckets and
+labels follow that pick for OpenAI models and local families alike
+(`client/src/hud/imageModels.ts`: `timingTag`, `modelTag`, `scaleFallback` for
+unlearned first runs); cost previews learned from billed token usage, per model,
+served by `/api/health`.
 
 Ideas worth weighing, roughly by value:
 
@@ -68,9 +69,9 @@ Ideas worth weighing, roughly by value:
   attempt the retry loop is on, that a moderation retry fired, that the gate is
   running. Stream real stage events (SSE on `/api/ai/image`) instead of the
   client guessing stage boundaries. This is the single biggest accuracy win.
-- **Per-model buckets beyond OpenAI.** OpenAI buckets carry the model id now;
-  local families and Retro Diffusion styles still share a bucket per provider
-  (plus render size). Key those by family/style too.
+- **Per-style buckets for Retro Diffusion.** Models and local families are keyed
+  now; Retro Diffusion styles still share one bucket per provider. Key those by
+  style too.
 - **Retry-aware estimates.** A gated animation may run 1–3 attempts. Estimate
   attempt 1, then extend the bar when a retry starts rather than letting it sit
   at 99%. Tell the user a retry is happening and why (the gate's finding).
@@ -95,8 +96,8 @@ Ideas worth weighing, roughly by value:
 
 ## Checklist when touching an AI call
 
-- [ ] `timing` bucket passed, keyed by operation + shape + `timingTag(provider, op)`
-- [ ] Fallback wrapped in `scaleFallback(ms, provider, op)`
+- [ ] `timing` bucket passed, keyed by operation + shape + `timingTag(provider, op, modelFamily)`
+- [ ] Fallback wrapped in `scaleFallback(ms, provider, op, modelFamily)`
 - [ ] Cost labels read `prices` from `/api/health` — never a hard-coded price
 - [ ] Stage text set before each step, naming the model/service
 - [ ] Local/free steps distinguished from paid ones

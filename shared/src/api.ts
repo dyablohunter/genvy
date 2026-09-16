@@ -172,6 +172,8 @@ export interface RepairFramesRequest {
   styleId?: string;
   styleHint?: string;
   provider?: string;
+  /** Quality tier for providers that price by it; clamped to what the model offers. */
+  quality?: ImageQualityTier;
 }
 
 export interface RepairFramesResponse {
@@ -282,7 +284,7 @@ export type ImageQualityTier = (typeof IMAGE_QUALITY_TIERS)[number];
  */
 export type ImagePriceTable = Record<
   'square' | 'tall',
-  Record<ImageQualityTier, { cents: number; samples: number }>
+  Partial<Record<ImageQualityTier, { cents: number; samples: number }>>
 >;
 
 export interface ImageProviderStatus {
@@ -304,6 +306,10 @@ export interface ImageProviderStatus {
     heavy?: boolean;
     available: boolean;
     workflows: string[];
+    /** Quality tiers THIS model offers (gpt-image-2 has three, gpt-image-2.5 five); pickers refill per model. */
+    qualityLevels?: ImageQualityTier[];
+    /** This model's per-image prices by op, canvas and tier — pickers price the chosen model, not a provider default. */
+    prices?: Record<ImageOp, ImagePriceTable>;
   }[];
   capabilities: {
     generate: boolean;
@@ -314,6 +320,8 @@ export interface ImageProviderStatus {
     /** Can draw a 2x2 candidate grid in one call; otherwise the server composes 4 singles. */
     gridSheets?: boolean;
     maxSize: number;
+    /** Takes a choosable square render canvas (local GPU): pickers show RENDER SIZE. */
+    renderSize?: boolean;
     /** Quality tiers the provider prices/renders by; pickers show a select when present. */
     qualityLevels?: ImageQualityTier[];
   };

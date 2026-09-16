@@ -231,6 +231,15 @@ same token rates. Its billing is now exact too: each response's `usage` tokens x
 rates is booked via `onBilled`, and previews come from a price book learned from those
 bills (`providers/openaiPricing.ts`, seeded from OpenAI's calculator formula). Busy labels
 and timing buckets name the model that runs.
+*Updated 2026-09-16 — model per operation:* those two are now only defaults. The user picks
+`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` or `gpt-image-2` for each job — blueprint
+(candidates), anchor chain (turns + strip props), ✎/↻ modal, animation forge (sheets +
+repair) — each with its own model select and a QUALITY select beside PROVIDER listing that
+model's tiers (gpt-image-2: three, 2.5: five), priced per model; the server clamps any tier
+the model lacks. Field evidence for the choice: a structural anchor fix that failed
+repeatedly at LOW landed first try at MEDIUM — quality, not only model, decides whether an
+edit can change anatomy. Animations and frame repair gained a quality tier (they were
+always LOW).
 
 **P2 — Anchor chain** ✅ DONE, and generalized well past the original plan
 Variants → pick → blocking lock gate → directional anchors, with per-clip facing. Beyond plan:

@@ -199,6 +199,7 @@ export function createLocalInferenceProvider(
       independentFrames: true, // per-frame renders: the route re-registers strips
       animation: true,
       maxSize: 1024,
+      renderSize: true, // the speed<->detail canvas dial
       costEstimate: () => 0, // the whole point
     },
     async generate(req: ImageGenerateRequest): Promise<Buffer> {
