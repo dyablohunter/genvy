@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import type { ImageOrientation } from '@genvy/shared';
+import type { ImageOrientation, ImageQualityTier } from '@genvy/shared';
 
 const SIZES: Record<ImageOrientation, string> = {
   portrait: '1024x1536',
@@ -26,7 +26,7 @@ function imageApiError(status: number, body: string): Error {
   });
 }
 
-export type ImageQuality = 'low' | 'medium' | 'high';
+export type ImageQuality = ImageQualityTier;
 
 /**
  * The token usage OpenAI reports with every gpt-image response — what the

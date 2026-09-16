@@ -1,4 +1,4 @@
-import type { ImageOp, ImageQualityTier } from '@genvy/shared';
+import { IMAGE_QUALITY_TIERS, type ImageOp, type ImageQualityTier } from '@genvy/shared';
 import { config } from '../config.js';
 import { generateImage, editImage, type OpenAiImageResult } from '../services/openaiImage.js';
 import type { ImageProvider, ImageGenerateRequest, ImageEditRequest } from './types.js';
@@ -53,10 +53,11 @@ export function createOpenAiProvider(
       gridSheets: true, // reliably lays out 2x2 candidate grids in one call
       animation: false,
       maxSize: 1536,
-      qualityLevels: ['low', 'medium', 'high'],
+      // All five 2.5 tiers under OpenAI's names; the picker prices each one.
+      qualityLevels: [...IMAGE_QUALITY_TIERS],
       /**
        * The learned price for this model, op, canvas and quality — both the
-       * canvas and the quality matter (high is ~35x low). Used before a call
+       * canvas and the quality matter (max is ~45x low). Used before a call
        * for previews, and booked only when a call reported no usage.
        */
       costEstimate: (req) => {

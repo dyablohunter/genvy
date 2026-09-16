@@ -1,6 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { ImageOp, ImagePriceTable, ImageQualityTier, ImageOrientation } from '@genvy/shared';
+import {
+  IMAGE_QUALITY_TIERS,
+  type ImageOp,
+  type ImagePriceTable,
+  type ImageQualityTier,
+  type ImageOrientation,
+} from '@genvy/shared';
 import type { OpenAiImageUsage } from '../services/openaiImage.js';
 
 /**
@@ -61,11 +67,12 @@ export function canvasOf(orientation: ImageOrientation | undefined): PriceCanvas
 /**
  * Per-quality axis constant of OpenAI's output-token formula. gpt-image-2.5
  * renamed the tiers: its `high` spends what gpt-image-2 `medium` did, and its
- * `max` (96) what gpt-image-2 `high` did. Genvy offers low/medium/high.
+ * `max` (96) what gpt-image-2 `high` did. gpt-image-2 had no xhigh/max; they
+ * clamp to its top budget so an old-model config still prices sanely.
  */
 const QUALITY_AXIS: Record<'gpt-image-2.5' | 'gpt-image-2', Record<ImageQualityTier, number>> = {
-  'gpt-image-2.5': { low: 16, medium: 24, high: 48 }, // xhigh 64, max 96 — not offered
-  'gpt-image-2': { low: 16, medium: 48, high: 96 },
+  'gpt-image-2.5': { low: 16, medium: 24, high: 48, xhigh: 64, max: 96 },
+  'gpt-image-2': { low: 16, medium: 48, high: 96, xhigh: 96, max: 96 },
 };
 
 /**
@@ -113,7 +120,7 @@ export const TYPICAL_PROMPT_TOKENS = 600;
  */
 export const EDIT_REFERENCE_SEED_CENTS = 1;
 
-const QUALITIES: ImageQualityTier[] = ['low', 'medium', 'high'];
+const QUALITIES: readonly ImageQualityTier[] = IMAGE_QUALITY_TIERS;
 /** Rolling window: a price change on OpenAI's side shows up within ~20 calls. */
 const MAX_SAMPLES = 20;
 

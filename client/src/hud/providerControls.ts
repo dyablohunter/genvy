@@ -1,4 +1,4 @@
-import type { ImageOp, ImageProviderStatus } from '@genvy/shared';
+import type { ImageOp, ImageProviderStatus, ImageQualityTier } from '@genvy/shared';
 import { field } from './components.js';
 import { UISound } from './UISound.js';
 import { modelTag, timingTag } from './imageModels.js';
@@ -105,7 +105,7 @@ export class ProviderControls {
     quality: string | undefined,
     op: ImageOp = this.defaultOp(),
   ): { dollars: number; approx: boolean } {
-    const tier = (quality ?? 'low') as 'low' | 'medium' | 'high';
+    const tier = (quality ?? 'low') as ImageQualityTier;
     const entry = this.current()?.prices?.[op][this.canvas === 'square' ? 'square' : 'tall'][tier];
     return entry ? { dollars: entry.cents / 100, approx: entry.samples === 0 } : { dollars: 0, approx: true };
   }
@@ -252,9 +252,9 @@ export class ProviderControls {
     return this.current()?.models?.length ? Number(this.sizeSel.value) || undefined : undefined;
   }
 
-  quality(): 'low' | 'medium' | 'high' | undefined {
+  quality(): ImageQualityTier | undefined {
     return this.current()?.capabilities.qualityLevels?.length
-      ? (this.qualitySel.value as 'low' | 'medium' | 'high')
+      ? (this.qualitySel.value as ImageQualityTier)
       : undefined;
   }
 

@@ -8,6 +8,7 @@ import type {
   AssetIndexEntry,
   ImageProviderStatus,
   ImageOp,
+  ImageQualityTier,
 } from '@genvy/shared';
 import {
   newAssetId,
@@ -684,24 +685,24 @@ export class SpriteToolScene extends Phaser.Scene {
     // The tiers differ by ~35x, so the picker states the cost instead of
     // hinting at it — the provider's own learned price for a portrait anchor
     // generation ("~" until a billed call has priced that tier).
-    const short: Record<string, string> = { low: 'LOW', medium: 'MID', high: 'HIGH' };
+    // OpenAI's own tier names, so the picker reads like their docs and calculator.
     for (const l of levels) {
       const opt = document.createElement('option');
       opt.value = l;
       const entry = p?.prices?.generate.tall[l];
       opt.textContent = entry
-        ? `${short[l] ?? l.toUpperCase()} · ${entry.samples === 0 ? '~' : ''}$${(entry.cents / 100).toFixed(3)}`
-        : (short[l] ?? l.toUpperCase());
+        ? `${l.toUpperCase()} · ${entry.samples === 0 ? '~' : ''}${(entry.cents / 100).toFixed(3)}`
+        : l.toUpperCase();
       this.genQualitySel.appendChild(opt);
     }
     this.genQualitySel.value = (levels as string[]).includes(previous) ? previous : 'low';
   }
 
   /** The chosen quality tier, only when the gen provider actually prices by one. */
-  private qualityFor(): 'low' | 'medium' | 'high' | undefined {
+  private qualityFor(): ImageQualityTier | undefined {
     const p = this.providers.find((x) => x.id === this.genProviderSel.value);
     if (!p?.capabilities.qualityLevels?.length) return undefined;
-    return (this.genQualitySel.value as 'low' | 'medium' | 'high') || undefined;
+    return (this.genQualitySel.value as ImageQualityTier) || undefined;
   }
 
   /** Chosen candidate count (1-4), only when the provider renders per-candidate. */
@@ -1053,12 +1054,18 @@ export class SpriteToolScene extends Phaser.Scene {
     const updateForgeLabel = () => {
       const n = this.candidateCount() ?? 4;
       // Cost preview on the button itself (progress-feedback skill): tiers
-      // differ 33x and a grid provider bills ONE call for all candidates,
+      // differ ~45x and a grid provider bills ONE call for all candidates,
       // while per-candidate providers bill each one. Free providers say FREE.
+      // The price is the provider's own portrait-generation figure from
+      // /api/health ("~" until a billed call has priced that tier).
       const provider = this.providers.find((x) => x.id === this.genProviderSel.value);
-      const perImage = { low: 0.005, medium: 0.041, high: 0.165 }[this.qualityFor() ?? 'low'] ?? 0;
+      const entry = provider?.prices?.generate.tall[this.qualityFor() ?? 'low'];
       const calls = provider?.capabilities.gridSheets === false ? n : 1;
-      const cost = provider?.free ? 'FREE' : perImage ? `$${(perImage * calls).toFixed(3)}` : '';
+      const cost = provider?.free
+        ? 'FREE'
+        : entry
+          ? `${entry.samples === 0 ? '~' : ''}$${((entry.cents / 100) * calls).toFixed(3)}`
+          : '';
       // setLabel, not setAttribute: GenvyButton reads the label attribute
       // only at mount — attribute writes after that are silently ignored.
       forgeBtn.setLabel(
@@ -2105,7 +2112,7 @@ export class SpriteToolScene extends Phaser.Scene {
         quality:
           qualityField.style.display === 'none'
             ? undefined
-            : (qualitySel.value as 'low' | 'medium' | 'high'),
+            : (qualitySel.value as ImageQualityTier),
       };
       close();
       void this.regenerateAnchorView(dir, notes.value.trim(), opts);
@@ -2126,7 +2133,7 @@ export class SpriteToolScene extends Phaser.Scene {
       provider?: string;
       modelFamily?: string;
       renderSize?: number;
-      quality?: 'low' | 'medium' | 'high';
+      quality?: ImageQualityTier;
     } = {},
   ) {
     const ws = this.activeWs();

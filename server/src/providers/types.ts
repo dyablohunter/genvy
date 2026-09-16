@@ -1,4 +1,4 @@
-import type { ImageOp, ImageOrientation, ImagePriceTable, StyleContract } from '@genvy/shared';
+import type { ImageOp, ImageOrientation, ImagePriceTable, ImageQualityTier, StyleContract } from '@genvy/shared';
 
 /**
  * Sprite Pipeline v2 — provider abstraction (docs/sprite-pipeline-v2.md §A).
@@ -29,7 +29,7 @@ export interface ImageGenerateRequest {
   /** Square render-canvas side for providers with a choosable one (local); speed<->detail dial. */
   renderSize?: number;
   /** Quality tier for providers that price/render by it (capabilities.qualityLevels). */
-  quality?: 'low' | 'medium' | 'high';
+  quality?: ImageQualityTier;
   /** Called when the provider reports real cost/balance for this request. */
   onBilled?: (info: ProviderBilling) => void;
 }
@@ -98,7 +98,7 @@ export interface ProviderCapabilities {
   /** longest supported output side in pixels */
   maxSize: number;
   /** Quality tiers the provider prices/renders by; pickers show a select when present. */
-  qualityLevels?: ('low' | 'medium' | 'high')[];
+  qualityLevels?: ImageQualityTier[];
   /** rough cost in cents, before spending */
   costEstimate(req: ProviderRequest): number;
 }

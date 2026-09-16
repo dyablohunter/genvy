@@ -109,8 +109,8 @@ export interface AiImageRequest {
   variantCount?: number;
   /** Square render-canvas side for providers with a choosable one (local): speed<->detail dial, NOT the sprite's output size. */
   renderSize?: number;
-  /** Quality tier for providers that price by it (gpt-image-2.5: low/medium/high — cost scales hard). */
-  quality?: 'low' | 'medium' | 'high';
+  /** Quality tier for providers that price by it (gpt-image-2.5: low → max — cost scales hard). */
+  quality?: ImageQualityTier;
   /** StyleContract preset id — its prompt/negative blocks are appended server-side. */
   styleId?: string;
   /** What is being drawn (see spriteSubjects.ts); defaults to 'character'. */
@@ -213,7 +213,7 @@ export interface SceneModifyRequest {
   instruction?: string;
   provider?: string;
   modelFamily?: string;
-  quality?: 'low' | 'medium' | 'high';
+  quality?: ImageQualityTier;
   renderSize?: number;
   styleId?: string;
   /** Ask for alpha output (a cut-out panel for parallax). Off by default. */
@@ -259,8 +259,13 @@ export interface AiActivityResponse {
 /** A text-to-image call or a reference-image edit — providers may run different models for each. */
 export type ImageOp = 'generate' | 'edit';
 
-/** Quality tiers the paid image providers price by. */
-export type ImageQualityTier = 'low' | 'medium' | 'high';
+/**
+ * Quality tiers, named as gpt-image-2.5 names them. 2.5 renamed the budgets:
+ * its `high` spends what gpt-image-2 `medium` did, and `max` what gpt-image-2
+ * `high` did — so the old top quality is `max`, not `high`.
+ */
+export const IMAGE_QUALITY_TIERS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ImageQualityTier = (typeof IMAGE_QUALITY_TIERS)[number];
 
 /**
  * One image's price, in cents, by canvas and quality. `samples` is how many
@@ -302,7 +307,7 @@ export interface ImageProviderStatus {
     gridSheets?: boolean;
     maxSize: number;
     /** Quality tiers the provider prices/renders by; pickers show a select when present. */
-    qualityLevels?: ('low' | 'medium' | 'high')[];
+    qualityLevels?: ImageQualityTier[];
   };
 }
 

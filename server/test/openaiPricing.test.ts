@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { IMAGE_QUALITY_TIERS } from '@genvy/shared';
 import { config } from '../src/config.js';
 import { createOpenAiProvider } from '../src/providers/openai.js';
 import {
@@ -54,13 +55,20 @@ describe("outputTokens: OpenAI's image calculator formula", () => {
     }
     expect(outputCents(FLARE, 'tall', 'low')).toBeCloseTo(0.474, 6);
     expect(outputCents(FLARE, 'square', 'low')).toBeCloseTo(0.588, 6);
-    // The renamed tiers at 1024x1024: medium 439, high 1756.
+    // The renamed tiers at 1024x1024: medium 439, high 1756, xhigh 3122, max 7024.
     expect(outputTokens(FLARE, 1024, 1024, 'medium')).toBe(439);
     expect(outputTokens(FLARE, 1024, 1024, 'high')).toBe(1756);
+    expect(outputTokens(FLARE, 1024, 1024, 'xhigh')).toBe(3122);
+    expect(outputTokens(FLARE, 1024, 1024, 'max')).toBe(7024);
+  });
+
+  it("names the tiers as 2.5 does: its max spends gpt-image-2's high budget", () => {
+    expect(outputTokens(FLARE, 1536, 1024, 'max')).toBe(outputTokens('gpt-image-2', 1536, 1024, 'high'));
+    expect(outputTokens(FLARE, 1536, 1024, 'high')).toBe(outputTokens('gpt-image-2', 1536, 1024, 'medium'));
   });
 
   it('prices portrait and landscape alike, and a square above both', () => {
-    for (const q of ['low', 'medium', 'high'] as const) {
+    for (const q of IMAGE_QUALITY_TIERS) {
       expect(outputTokens(FLARE, 1024, 1536, q)).toBe(outputTokens(FLARE, 1536, 1024, q));
       expect(outputTokens(FLARE, 1024, 1024, q)).toBeGreaterThan(outputTokens(FLARE, 1536, 1024, q));
     }
@@ -108,7 +116,7 @@ describe('imageCosts: previews learned from billed calls', () => {
   it('serves a full canvas x quality table for /api/health', () => {
     const table = imageCosts.table(FLARE, 'generate');
     expect(Object.keys(table).sort()).toEqual(['square', 'tall']);
-    expect(Object.keys(table.tall).sort()).toEqual(['high', 'low', 'medium']);
+    expect(Object.keys(table.tall).sort()).toEqual([...IMAGE_QUALITY_TIERS].sort());
   });
 
   it('maps both non-square canvases to one price row', () => {
@@ -154,6 +162,10 @@ describe('OpenAI provider: flare draws, sunburst edits, usage is billed exactly'
 
   it('names the model each op runs on', () => {
     expect(provider().modelIds).toEqual({ generate: FLARE, edit: SUNBURST });
+  });
+
+  it("offers every gpt-image-2.5 tier under OpenAI's names", () => {
+    expect(provider().capabilities.qualityLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
   });
 
   it('generates with flare and bills the reported usage', async () => {

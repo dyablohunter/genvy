@@ -10,6 +10,7 @@ import {
   getStylePreset,
   getSubject,
   type ImageOp,
+  type ImageQualityTier,
 } from '@genvy/shared';
 import { generateJson, generateText } from '../services/deepseek.js';
 import { providerRegistry, type ImageProvider } from '../providers/index.js';
@@ -55,7 +56,7 @@ interface SceneModifyBody {
   instruction?: string;
   provider?: string;
   modelFamily?: string;
-  quality?: 'low' | 'medium' | 'high';
+  quality?: ImageQualityTier;
   renderSize?: number;
   styleId?: string;
   /** Ask the model for alpha output (a cut-out panel for parallax). */
@@ -97,7 +98,7 @@ interface AiImageBody {
   /** Square render-canvas side for providers with a choosable one (local): speed<->detail dial. */
   renderSize?: number;
   /** Quality tier for providers that price by it (capabilities.qualityLevels). */
-  quality?: 'low' | 'medium' | 'high';
+  quality?: ImageQualityTier;
   /** StyleContract preset id (shared/src/schemas/styleContract.ts). */
   styleId?: string;
   /** What is being drawn (spriteSubjects.ts); defaults to 'character'. */
