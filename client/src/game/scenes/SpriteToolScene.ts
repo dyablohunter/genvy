@@ -961,12 +961,13 @@ export class SpriteToolScene extends Phaser.Scene {
     }
     btnRow.append(genBtn, manualBtn);
 
-    // Style is decided HERE, before the concept: the writer must know it, or
-    // it invents its own art direction in the image prompt and fights the
-    // style contract chosen later.
+    // ART STYLE lives in the blueprint, beside the stylized/realistic slider:
+    // style decides how the candidates are DRAWN, and drawing happens there.
+    // The writer still receives the current pick as context, but it is
+    // forbidden to put style language in the image prompt anyway, so the
+    // concept does not depend on style being chosen first.
     panel.append(
       field('WHAT ARE YOU MAKING?', this.subjectSel),
-      field('ART STYLE', this.styleSel),
       field('DESCRIBE YOUR SPRITE', prompt),
       field('CREATIVITY · FAITHFUL ◄─► WILD', this.creativityIn),
       btnRow,
@@ -1094,6 +1095,7 @@ export class SpriteToolScene extends Phaser.Scene {
       field('NAME', this.nameIn),
       field('LORE', this.descIn),
       field('IMAGE PROMPT', this.imagePromptIn),
+      field('ART STYLE', this.styleSel),
       field('STYLE · STYLIZED ◄─► REALISTIC', this.styleIn),
       (() => {
         // Provider + quality share the line 50/50; quality hides for
