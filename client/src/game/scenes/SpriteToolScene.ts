@@ -948,10 +948,10 @@ export class SpriteToolScene extends Phaser.Scene {
     genBtn.setAttribute('label', 'GENERATE CONCEPT');
     this.genConceptBtn = genBtn;
 
-    // Manual mode: skip DeepSeek entirely — the user writes name, lore and
+    // DESCRIBE CONCEPT: skip DeepSeek entirely — the user writes name, lore and
     // image prompt themselves in the blueprint. Free, instant, no AI call.
     const manualBtn = document.createElement('genvy-button') as GenvyButton;
-    manualBtn.setAttribute('label', 'MANUAL EDIT');
+    manualBtn.setAttribute('label', 'DESCRIBE CONCEPT');
     const btnRow = document.createElement('div');
     btnRow.style.display = 'flex';
     btnRow.style.gap = '8px';
@@ -979,7 +979,7 @@ export class SpriteToolScene extends Phaser.Scene {
       }
       UISound.play('click');
       // No DeepSeek call — but PRESERVE whatever is already written: coming
-      // back from the blueprint and clicking MANUAL EDIT again must never
+      // back from the blueprint and clicking DESCRIBE CONCEPT again must never
       // wipe the name/lore the user typed. Only the empty image prompt gets
       // seeded from the description, so typed work is never thrown away.
       if (prompt.value.trim() && !this.imagePromptIn.value.trim()) {
@@ -989,7 +989,7 @@ export class SpriteToolScene extends Phaser.Scene {
       autoGrow.refresh(this.imagePromptIn);
       if (this.sessionId) this.persistConcept(this.sessionId);
       this.setStage('blueprint');
-      HudShell.toast('MANUAL MODE — WRITE NAME, LORE & IMAGE PROMPT, THEN FORGE', 'success');
+      HudShell.toast('DESCRIBE YOUR CONCEPT — WRITE NAME, LORE & IMAGE PROMPT, THEN FORGE', 'success');
     });
 
     genBtn.onClick(async () => {
