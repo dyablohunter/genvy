@@ -136,6 +136,8 @@ export class WorldToolScene extends Phaser.Scene {
   private toolButtons = new Map<PaintTool, GenvyButton>();
   /** Provider/model/size/quality controls shared with the Sprite Forge. */
   private providerControls: ProviderControls | null = null;
+  /** The provider roster from /api/health, for control sets built later (the modify modal). */
+  private providers: ImageProviderStatus[] = [];
   /** Which kind of level is being built: a tilemap or a painted scene. */
   /**
    * Which layer strokes land on. A level is not a TYPE — it is whichever
@@ -1246,6 +1248,7 @@ export class WorldToolScene extends Phaser.Scene {
     } catch {
       // Offline: the controls stay empty and the guards block paid work.
     }
+    this.providers = providers;
     this.providerControls?.setProviders(providers);
     this.scenePanel?.controls.setProviders(providers);
   }
@@ -3067,20 +3070,40 @@ export class WorldToolScene extends Phaser.Scene {
 
     const go = document.createElement('genvy-button') as GenvyButton;
     go.setAttribute('variant', 'accent');
-    // A panel modification is an EDIT of the drawn panel — priced and named
-    // as one, even though these controls were built for painting scenes.
-    const cost = controls.costPreview(1, 'edit');
-    go.setLabel(`MODIFY · 1 RENDER${cost ? ` · ${cost}` : ''}`);
+
+    // This edit's own provider, quality and model — seeded from the scene
+    // panel, defaulting to the provider's EDIT model, priced as an edit for
+    // this panel's canvas. It used to reuse the panel's picks invisibly.
+    const editControls = new ProviderControls({
+      workflow: 'anchor-generate', // same local families the scene panel offers
+      op: 'edit',
+      candidates: false,
+      eligible: (p) => p.capabilities.edit && p.capabilities.maxSize >= 512,
+    });
+    editControls.setCanvas(
+      img.width > img.height ? 'landscape' : img.height > img.width ? 'portrait' : 'square',
+    );
+    const relabel = () => {
+      const cost = editControls.costPreview(1, 'edit');
+      go.setLabel(`MODIFY · 1 RENDER${cost ? ` · ${cost}` : ''}`);
+    };
+    editControls.onChange = relabel;
+    editControls.setProviders(this.providers);
+    editControls.selectProvider(controls.providerId());
+    relabel();
 
     const hint = document.createElement('div');
     hint.className = 'g-hint';
     hint.textContent =
-      'THE PANEL IS SENT EXACTLY AS DRAWN, MIRRORING INCLUDED, AND COMES BACK AT ITS OWN SIZE. ' +
-      `USES THE SCENE PANEL'S PROVIDER (${controls.tag('edit')}).`;
+      'THE PANEL IS SENT EXACTLY AS DRAWN, MIRRORING INCLUDED, AND COMES BACK AT ITS OWN SIZE.';
 
     const stack = document.createElement('div');
     stack.className = 'g-field-stack';
-    stack.append(field('WHAT SHOULD CHANGE', instruction), field('BACKGROUND', transparentSel));
+    stack.append(
+      field('WHAT SHOULD CHANGE', instruction),
+      field('BACKGROUND', transparentSel),
+      ...editControls.elements(),
+    );
 
     // A cropped panel is an odd shape the model cannot render: it works at
     // its standard canvas and the result is scaled back. Say so BEFORE the
@@ -3100,14 +3123,14 @@ export class WorldToolScene extends Phaser.Scene {
     stack.append(go, hint);
 
     go.onClick(() => {
-      const blocked = controls.blockedReason();
+      const blocked = editControls.blockedReason();
       if (blocked) return HudShell.toast(blocked, 'error');
       const text = instruction.value.trim();
       if (!text && transparentSel.value === 'no') {
         return HudShell.toast('SAY WHAT TO CHANGE', 'error');
       }
       close();
-      void this.runModify(index, text, transparentSel.value === 'yes');
+      void this.runModify(index, text, transparentSel.value === 'yes', editControls);
     });
     closeX.addEventListener('click', () => {
       UISound.play('click');
@@ -3124,10 +3147,15 @@ export class WorldToolScene extends Phaser.Scene {
   }
 
   /** Run the modification and put the resulting panel back in the strip. */
-  private async runModify(index: number, instruction: string, transparent: boolean) {
+  private async runModify(
+    index: number,
+    instruction: string,
+    transparent: boolean,
+    /** The modal's own picks for this edit. */
+    controls: ProviderControls,
+  ) {
     const scene = this.activeScene;
-    const controls = this.scenePanel?.controls;
-    if (!scene || !controls) return;
+    if (!scene) return;
     const segments = sceneSegments(scene);
     const seg = segments[index];
     if (!seg) return;

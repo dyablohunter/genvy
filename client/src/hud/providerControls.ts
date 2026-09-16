@@ -33,6 +33,12 @@ export interface ProviderControlsOptions {
   candidates?: boolean;
   /** Which providers are eligible at all (defaults to "can generate"). */
   eligible?: (p: ImageProviderStatus) => boolean;
+  /**
+   * Whether these controls send a fresh generation or an edit of a reference —
+   * it picks the default model and the prices shown. Inferred from `workflow`
+   * when absent ('anchor-generate' generates, everything else edits).
+   */
+  op?: ImageOp;
 }
 
 const SIZE_LABELS: Record<number, string> = {
@@ -101,7 +107,19 @@ export class ProviderControls {
 
   /** What this control set's workflow sends: a fresh generation, or an edit of a reference. */
   private defaultOp(): ImageOp {
-    return this.opts.workflow === 'anchor-generate' ? 'generate' : 'edit';
+    return this.opts.op ?? (this.opts.workflow === 'anchor-generate' ? 'generate' : 'edit');
+  }
+
+  /**
+   * Preselect a provider (e.g. seed a modal from its panel's pick) when it is
+   * offered and live here; the pickers refill for it.
+   */
+  selectProvider(id: string | undefined) {
+    const opt = Array.from(this.providerSel.options).find((o) => o.value === id && !o.disabled);
+    if (!opt) return;
+    this.providerSel.value = opt.value;
+    this.refreshVisibility();
+    this.onChange?.();
   }
 
   private priceCanvas(): 'square' | 'tall' {
