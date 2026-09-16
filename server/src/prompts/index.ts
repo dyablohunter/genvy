@@ -657,14 +657,28 @@ export type AnchorDirection = 'south' | 'west' | 'east' | 'north';
  * front-view habit: claws/toes curling toward the camera on a figure seen
  * from behind.
  */
-function anchorViewSpec(direction: AnchorDirection, subj: SpriteSubject): string {
+/**
+ * `referenceIsTrusted`: the reference image is an approved anchor whose
+ * attachment placement should be copied (a TURN from the primary). A REFINE
+ * edits the very drawing being corrected — telling the model to keep
+ * attachments where that reference has them forbids the most common fix.
+ */
+function anchorViewSpec(
+  direction: AnchorDirection,
+  subj: SpriteSubject,
+  referenceIsTrusted = true,
+): string {
+  const attachmentRule = referenceIsTrusted
+    ? ' keep every one exactly where the reference places it.'
+    : ' attach each one where the anatomy actually joins it to the body.';
   const views: Record<AnchorDirection, string> = {
     west: `WEST: facing left in profile, the whole ${subj.noun} visible, turned a full 3/4 to the left.`,
     east: `EAST: facing right in profile, the whole ${subj.noun} visible, turned a full 3/4 to the right.`,
     north:
       `NORTH: seen from behind (back view), the whole ${subj.noun} visible. Back views tend to` +
-      ' incorrectly center or float attachments — keep every one exactly where the reference' +
-      ' places it. Back-view extremities are seen from BEHIND too: show heels and the backs of' +
+      ' incorrectly center or float attachments —' +
+      attachmentRule +
+      ' Back-view extremities are seen from BEHIND too: show heels and the backs of' +
       ' the legs/ankles; toes, talons and claws point AWAY from the camera, so at most their tips' +
       ' peek past the sides of each foot — never full claws curling toward the viewer. Hands and' +
       ' paws show knuckles and backs, never palms or pads. The head shows the back of the skull,' +
@@ -708,15 +722,30 @@ export function refineAnchorEditPrompt(
   opts: ImagePromptOpts = {},
 ): string {
   const subj = opts.subject ?? getSubject();
-  const fix = corrections
-    ? `Apply exactly these corrections and nothing else:\n${corrections}`
-    : 'Redraw it cleanly, fixing any anatomical or rendering flaws, changing nothing else.';
-  return `Image 1 is the current ${direction.toUpperCase()}-facing neutral anchor for ${name}.
-Redraw the SAME ${direction.toUpperCase()}-facing view of the same ${subj.noun}: identical identity,
+  const dir = direction.toUpperCase();
+  // Without corrections this is a clean-up pass: preserve everything. With
+  // corrections the CHANGE is the task — a preservation-first prompt
+  // ("identical silhouette, attachments, pose", "keep attachments where the
+  // reference has them") vetoes exactly the structural fixes users ask for:
+  // a scorpion tail re-rooted at the abdomen came back untouched, twice.
+  const task = corrections
+    ? `Image 1 is the current ${dir}-facing neutral anchor for ${name}. It has a flaw that must be fixed.
+
+REQUIRED CHANGE — the whole purpose of this edit. The result is wrong unless this is clearly visible:
+${corrections}
+
+Make the change even when it alters the silhouette, a limb's pose, or where a part (tail, wings,
+cape, weapon, horns...) joins the body: redraw every affected part so the anatomy is coherent,
+rather than leaving it as in Image 1.
+Keep everything the change does not touch: identity, head and face, palette, proportions,
+costume, rendering style, and the ${dir}-facing view.
+${anchorViewSpec(direction, subj, false)}`
+    : `Image 1 is the current ${dir}-facing neutral anchor for ${name}.
+Redraw the SAME ${dir}-facing view of the same ${subj.noun}: identical identity,
 palette, proportions, silhouette, attachments, pose and rendering style.
 ${anchorViewSpec(direction, subj)}
-${fix}
-Everything the corrections do not mention stays exactly as in the reference.${styleBlockForEdit(opts.style, opts.styleHint)}
+Redraw it cleanly, fixing any anatomical or rendering flaws, changing nothing else.`;
+  return `${task}${styleBlockForEdit(opts.style, opts.styleHint)}
 Critical: no dynamic effects; this is a neutral anchor the animations will be generated from.
 One ${subj.noun} only, centered, fully visible, resting at bottom-center, ample padding.
 ${backgroundBlock(opts.background, opts.chromaHex)}

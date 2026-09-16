@@ -21,6 +21,7 @@ import {
   neutralAnchorImagePrompt,
   neutralResetEditPrompt,
   directionalAnchorEditPrompt,
+  refineAnchorEditPrompt,
   choreographyBlock,
   classifyMotion,
   backgroundBlock,
@@ -286,6 +287,28 @@ describe('prompt scaffolds', () => {
     expect(directionalAnchorEditPrompt('Bramble', 'west')).toMatch(/facing left in profile/);
     expect(directionalAnchorEditPrompt('Bramble', 'north')).toMatch(/back view/);
     expect(directionalAnchorEditPrompt('Bramble', 'north')).toMatch(/Image 1 is the approved south-facing/);
+    // A TURN copies attachment placement from the approved primary.
+    expect(directionalAnchorEditPrompt('Bramble', 'north')).toMatch(/exactly where the reference places it/);
+  });
+
+  it("refine with corrections: the change is the task, nothing in the prompt vetoes it", () => {
+    // Field case: "make the tail come out of his abdomen" came back unchanged
+    // twice, because the prompt demanded an identical silhouette/attachments
+    // and told a back view to keep attachments where the FLAWED reference had them.
+    const p = refineAnchorEditPrompt('Scorpius', 'north', 'make the tail come out of his abdomen');
+    expect(p).toMatch(/REQUIRED CHANGE[\s\S]*make the tail come out of his abdomen/);
+    expect(p.indexOf('REQUIRED CHANGE')).toBeLessThan(p.indexOf('Keep everything the change does not touch'));
+    expect(p).toMatch(/alters the silhouette[\s\S]*joins the body/);
+    expect(p).not.toMatch(/identical identity,\s*palette, proportions, silhouette, attachments, pose/);
+    expect(p).not.toMatch(/exactly where the reference places it/);
+    expect(p).toMatch(/where the anatomy actually joins it/);
+  });
+
+  it('refine without corrections stays a preserve-everything clean-up', () => {
+    const p = refineAnchorEditPrompt('Scorpius', 'north');
+    expect(p).toMatch(/identical identity,\s*palette, proportions, silhouette, attachments, pose/);
+    expect(p).toMatch(/changing nothing else/);
+    expect(p).not.toMatch(/REQUIRED CHANGE/);
   });
 
   it('speaks about the subject that is actually being drawn', () => {
