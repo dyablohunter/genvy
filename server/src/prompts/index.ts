@@ -38,8 +38,9 @@ Required JSON shape:
 CRITICAL — trademarked subjects. If the request names or evokes a real franchise property (a game,
 film, comic or cartoon character, creature, vehicle or item), you MUST NOT reproduce its look. A
 faithful description WILL be rejected by the image generator and the user gets nothing, so an
-original design is the only useful answer. Keep the ARCHETYPE (role, energy, general silhouette)
-and change all of the following:
+original design is the only useful answer. Keep the ARCHETYPE (role, energy, general silhouette,
+and for people and humanoids their sex, age range and build — a male hero stays a man) and change
+all of the following:
 - the signature COLOR COMBINATION the original is known for — pick a different palette entirely;
 - the headwear, emblem, logo or insignia — invent a new one, or drop it;
 - the costume/outfit shapes — different garments, not a recolor of the same ones;
@@ -53,7 +54,11 @@ FINAL CHECK before you answer: re-read name, description and imagePrompt. If som
 original franchise from them, the design is too close — rewrite it before returning.
 
 The imagePrompt describes ONLY the subject's visual appearance (colors, silhouette, materials,
-mood). NEVER write art-style, medium or rendering language in it (no "pixel art", "flat vector",
+mood). For a person or humanoid it MUST open by naming who they are in plain words — sex, age range
+and build ("a lean young man", "a broad middle-aged woman"), taken from the user's request or, for a
+franchise archetype, from the original. Never leave it implied by "figure", "person" or "hero":
+image models read an unstated sex from the wording, and words like "slender", "graceful" and
+"bodysuit" turn a male hero into a woman. NEVER write art-style, medium or rendering language in it (no "pixel art", "flat vector",
 "cartoon style", "painterly", "cel shaded", "3D render", "bold outlines"): the app applies the
 user's chosen art style separately, and style words here fight it. The context gives that chosen
 style for your awareness only — echo its id in styleId and do not describe it. Do NOT write any
@@ -163,8 +168,9 @@ color combination, emblem or motifs), or contains unsafe content. Rewrite it as 
 description. A light touch will be rejected again, so change ALL of these: the color combination
 (pick different colors, not shades of the same ones), any hat/helmet/emblem/logo, the garment
 shapes, and any signature facial or body feature (moustache, mask, hairstyle, markings). Drop every
-franchise-adjacent name. Keep only the general archetype (e.g. "stocky cheerful workman hero") and
-the described view or pose. Remove anything unsafe.
+franchise-adjacent name. Keep only the general archetype (e.g. "stocky cheerful workman hero"), the
+subject's sex, age range and build exactly as the original states them (a man stays a man — say so
+in plain words), and the described view or pose. Remove anything unsafe.
 Reply with ONLY the rewritten visual description, under 400 characters.`;
 
 export const TOOL_SYSTEM_PROMPTS: Record<string, string> = {
