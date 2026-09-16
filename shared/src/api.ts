@@ -256,10 +256,30 @@ export interface AiActivityResponse {
 }
 
 /** Live/offline status of one image provider (from GET /api/health). */
+/** A text-to-image call or a reference-image edit — providers may run different models for each. */
+export type ImageOp = 'generate' | 'edit';
+
+/** Quality tiers the paid image providers price by. */
+export type ImageQualityTier = 'low' | 'medium' | 'high';
+
+/**
+ * One image's price, in cents, by canvas and quality. `samples` is how many
+ * real billed calls the figure is averaged from; 0 means it is still the
+ * seeded estimate and pickers mark it approximate.
+ */
+export type ImagePriceTable = Record<
+  'square' | 'tall',
+  Record<ImageQualityTier, { cents: number; samples: number }>
+>;
+
 export interface ImageProviderStatus {
   id: string;
   name: string;
   live: boolean;
+  /** The model id each kind of call runs on, for providers that split them (OpenAI: flare generates, sunburst edits). */
+  modelIds?: Record<ImageOp, string>;
+  /** Per-image prices for each kind of call, learned from billed usage — the one table every cost label reads. */
+  prices?: Record<ImageOp, ImagePriceTable>;
   /** Costs nothing per call (the local-inference provider) — pickers label it FREE. */
   free?: boolean;
   /** Selectable models for multi-model providers; pickers disable unverified/unavailable ones. */

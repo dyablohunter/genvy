@@ -35,6 +35,7 @@ import { HudShell } from '../../hud/HudShell.js';
 import type { BusyStepState } from '../../hud/HudShell.js';
 import { UISound } from '../../hud/UISound.js';
 import { expectedDuration, recordDuration } from '../../hud/progress.js';
+import { modelTag, scaleFallback, timingTag } from '../../hud/imageModels.js';
 import { goToScene, enterScene, registerAssetOpenHandlers } from '../../hud/transitions.js';
 import { api, fileUrl, ApiError } from '../../api/client.js';
 import { collection } from '../../state/collection.js';
@@ -3066,14 +3067,16 @@ export class WorldToolScene extends Phaser.Scene {
 
     const go = document.createElement('genvy-button') as GenvyButton;
     go.setAttribute('variant', 'accent');
-    const cost = controls.costPreview();
+    // A panel modification is an EDIT of the drawn panel — priced and named
+    // as one, even though these controls were built for painting scenes.
+    const cost = controls.costPreview(1, 'edit');
     go.setLabel(`MODIFY · 1 RENDER${cost ? ` · ${cost}` : ''}`);
 
     const hint = document.createElement('div');
     hint.className = 'g-hint';
     hint.textContent =
       'THE PANEL IS SENT EXACTLY AS DRAWN, MIRRORING INCLUDED, AND COMES BACK AT ITS OWN SIZE. ' +
-      `USES THE SCENE PANEL'S PROVIDER (${controls.tag()}).`;
+      `USES THE SCENE PANEL'S PROVIDER (${controls.tag('edit')}).`;
 
     const stack = document.createElement('div');
     stack.className = 'g-field-stack';
@@ -3134,7 +3137,7 @@ export class WorldToolScene extends Phaser.Scene {
       'MODIFYING THE PANEL...',
       async () => {
         UISound.play('generate');
-        HudShell.setBusyLabel(`${controls.tag()} · SENDING THE PANEL AS DRAWN...`);
+        HudShell.setBusyLabel(`${controls.tag('edit')} · SENDING THE PANEL AS DRAWN...`);
         const result = await api.sceneModify({
           assetId: scene.id,
           panel: { file: seg.image.path, flipX: seg.flipX, flipY: seg.flipY },
@@ -3160,7 +3163,10 @@ export class WorldToolScene extends Phaser.Scene {
         UISound.play('complete');
         await HudShell.refreshSpend();
       },
-      { key: `scene-modify:${controls.providerId() ?? 'openai'}`, fallbackMs: 40000 },
+      {
+        key: `scene-modify:${controls.timingTag('edit')}`,
+        fallbackMs: scaleFallback(40000, controls.providerId(), 'edit'),
+      },
     );
   }
 
@@ -3371,7 +3377,9 @@ export class WorldToolScene extends Phaser.Scene {
       }
       await this.busy(statusHost, 'FORGING TILES · THIS TAKES A MINUTE...', async () => {
         UISound.play('generate');
-        HudShell.setBusyLabel('GPT-IMAGE-2.5 · DRAWING THE 4x6 TILE GRID...');
+        // The tile sheet request names no provider, so the server default
+        // (OpenAI's generation model) draws it.
+        HudShell.setBusyLabel(`${modelTag(undefined, 'generate')} · DRAWING THE 4x6 TILE GRID...`);
         const subjects = this.concept!.tileNames.length
           ? this.concept!.tileNames.join(', ')
           : this.concept!.imagePrompt;
@@ -3448,7 +3456,10 @@ export class WorldToolScene extends Phaser.Scene {
         clearDraft('world:concept');
         // The concept did its job; the tools take over.
         this.setStage('edit');
-      }, { key: 'tileset:image', fallbackMs: 50000 });
+      }, {
+        key: `tileset:image:${timingTag(undefined, 'generate')}`,
+        fallbackMs: scaleFallback(50000, undefined, 'generate'),
+      });
     });
 
     return panel;

@@ -4,8 +4,9 @@ import path from 'node:path';
 /**
  * Estimated AI spend ledger, per provider, persisted at `library/usage.json`
  * (the library ROOT — WIPE ALL clears assets/ and files/ but the spend
- * history survives). All figures are estimates from published pricing, not
- * billing data.
+ * history survives). Calls whose provider reports real figures (Retro
+ * Diffusion's cost, OpenAI's token usage) are booked exactly; the rest are
+ * estimates from published pricing.
  */
 
 export interface ProviderUsage {

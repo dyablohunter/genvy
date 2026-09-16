@@ -14,7 +14,11 @@ export const config = {
   openaiApiKey: (process.env.OPENAI_API_KEY ?? '').replace(/^"|"$/g, ''),
   deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
   deepseekModel: process.env.DEEPSEEK_MODEL ?? 'deepseek-chat',
+  // gpt-image-2.5 ships only as two variants at the same token rates: flare
+  // (fast) draws new images; sunburst (slower, tighter subject preservation)
+  // does the reference edits — anchor turns, animation sheets, frame repair.
   openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2.5-flare',
+  openaiEditModel: process.env.OPENAI_EDIT_MODEL ?? 'gpt-image-2.5-sunburst',
   // Sprite Pipeline v2 — additional BYO-key providers (missing key = LINK OFFLINE).
   retroDiffusionApiKey: (process.env.RETRODIFFUSION_API_KEY ?? '').replace(/^"|"$/g, ''),
   // P6 — the local-inference service (free, optional; offline until its /health answers).

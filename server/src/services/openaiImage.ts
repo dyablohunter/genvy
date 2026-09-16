@@ -28,13 +28,35 @@ function imageApiError(status: number, body: string): Error {
 
 export type ImageQuality = 'low' | 'medium' | 'high';
 
-/** Generate an image via gpt-image and return the PNG bytes. */
+/**
+ * The token usage OpenAI reports with every gpt-image response — what the
+ * call is actually billed on. Absent fields mean the API left them out.
+ */
+export interface OpenAiImageUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  input_tokens_details?: { text_tokens?: number; image_tokens?: number; cached_tokens?: number };
+}
+
+export interface OpenAiImageResult {
+  image: Buffer;
+  usage?: OpenAiImageUsage;
+}
+
+function parseImageResponse(data: { data?: { b64_json?: string }[]; usage?: OpenAiImageUsage }): OpenAiImageResult {
+  const b64 = data.data?.[0]?.b64_json;
+  if (!b64) throw Object.assign(new Error('OpenAI returned no image data'), { statusCode: 502 });
+  return { image: Buffer.from(b64, 'base64'), ...(data.usage ? { usage: data.usage } : {}) };
+}
+
+/** Generate an image via gpt-image; returns the PNG bytes and the billed usage. */
 export async function generateImage(
   prompt: string,
   orientation: ImageOrientation,
   transparent = false,
   quality: ImageQuality = 'low',
-): Promise<Buffer> {
+  model = config.openaiImageModel,
+): Promise<OpenAiImageResult> {
   if (!config.openaiApiKey) {
     throw Object.assign(new Error('OpenAI API key not configured'), { statusCode: 503 });
   }
@@ -45,7 +67,7 @@ export async function generateImage(
       Authorization: `Bearer ${config.openaiApiKey}`,
     },
     body: JSON.stringify({
-      model: config.openaiImageModel,
+      model,
       prompt,
       size: SIZES[orientation],
       quality,
@@ -56,10 +78,7 @@ export async function generateImage(
   if (!res.ok) {
     throw imageApiError(res.status, await res.text());
   }
-  const data = (await res.json()) as { data: { b64_json?: string }[] };
-  const b64 = data.data[0]?.b64_json;
-  if (!b64) throw Object.assign(new Error('OpenAI returned no image data'), { statusCode: 502 });
-  return Buffer.from(b64, 'base64');
+  return parseImageResponse(await res.json());
 }
 
 /**
@@ -74,13 +93,14 @@ export async function editImage(
   orientation: ImageOrientation,
   transparent = false,
   quality: ImageQuality = 'low',
-): Promise<Buffer> {
+  model = config.openaiEditModel,
+): Promise<OpenAiImageResult> {
   if (!config.openaiApiKey) {
     throw Object.assign(new Error('OpenAI API key not configured'), { statusCode: 503 });
   }
   const references = Array.isArray(reference) ? reference : [reference];
   const form = new FormData();
-  form.append('model', config.openaiImageModel);
+  form.append('model', model);
   form.append('prompt', prompt);
   form.append('size', SIZES[orientation]);
   form.append('quality', quality);
@@ -102,8 +122,5 @@ export async function editImage(
   if (!res.ok) {
     throw imageApiError(res.status, await res.text());
   }
-  const data = (await res.json()) as { data: { b64_json?: string }[] };
-  const b64 = data.data[0]?.b64_json;
-  if (!b64) throw Object.assign(new Error('OpenAI returned no image data'), { statusCode: 502 });
-  return Buffer.from(b64, 'base64');
+  return parseImageResponse(await res.json());
 }

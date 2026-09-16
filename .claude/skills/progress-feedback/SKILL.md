@@ -53,7 +53,10 @@ implement it behind the existing helpers, and keep the API the same.
 Done so far: determinate bar paced by learned per-operation averages; stage text
 naming the model/service; an API-layer safety net that guarantees a determinate
 bar for every image request; per-unit step chips; spend + provider-reported
-balance in the header.
+balance in the header; per-model buckets and labels for OpenAI (flare generates,
+sunburst edits — `client/src/hud/imageModels.ts`: `timingTag`, `modelTag`, and
+`scaleFallback` for unlearned first runs); cost previews learned from billed
+token usage, served by `/api/health`.
 
 Ideas worth weighing, roughly by value:
 
@@ -61,9 +64,9 @@ Ideas worth weighing, roughly by value:
   attempt the retry loop is on, that a moderation retry fired, that the gate is
   running. Stream real stage events (SSE on `/api/ai/image`) instead of the
   client guessing stage boundaries. This is the single biggest accuracy win.
-- **Per-provider, per-model buckets.** gpt-image-2.5 and Retro Diffusion have very
-  different latencies (RD queues jobs and can run for minutes); so do local GPU
-  tiers. Key buckets by provider and model, not just operation shape.
+- **Per-model buckets beyond OpenAI.** OpenAI buckets carry the model id now;
+  local families and Retro Diffusion styles still share a bucket per provider
+  (plus render size). Key those by family/style too.
 - **Retry-aware estimates.** A gated animation may run 1–3 attempts. Estimate
   attempt 1, then extend the bar when a retry starts rather than letting it sit
   at 99%. Tell the user a retry is happening and why (the gate's finding).

@@ -7,6 +7,7 @@ import type {
   SpriteBox,
   AssetIndexEntry,
   ImageProviderStatus,
+  ImageOp,
 } from '@genvy/shared';
 import {
   newAssetId,
@@ -21,6 +22,7 @@ import {
 import { HudShell, type BusyStepState } from '../../hud/HudShell.js';
 import { UISound } from '../../hud/UISound.js';
 import { expectedDuration, recordDuration } from '../../hud/progress.js';
+import { modelTag, scaleFallback, timingTag } from '../../hud/imageModels.js';
 import { goToScene, enterScene, registerAssetOpenHandlers } from '../../hud/transitions.js';
 import { attachBackdrop } from '../backdrop.js';
 import { api, fileUrl, ApiError } from '../../api/client.js';
@@ -679,17 +681,17 @@ export class SpriteToolScene extends Phaser.Scene {
     if (levels.length === 0) return;
     const previous = this.genQualitySel.value;
     this.genQualitySel.innerHTML = '';
-    // Real published per-image prices at genvy's render sizes — the tiers
-    // differ by 33x, so the picker states the cost instead of hinting at it.
-    const labels: Record<string, string> = {
-      low: 'LOW · $0.005',
-      medium: 'MID · $0.041',
-      high: 'HIGH · $0.165',
-    };
+    // The tiers differ by ~35x, so the picker states the cost instead of
+    // hinting at it — the provider's own learned price for a portrait anchor
+    // generation ("~" until a billed call has priced that tier).
+    const short: Record<string, string> = { low: 'LOW', medium: 'MID', high: 'HIGH' };
     for (const l of levels) {
       const opt = document.createElement('option');
       opt.value = l;
-      opt.textContent = labels[l] ?? l.toUpperCase();
+      const entry = p?.prices?.generate.tall[l];
+      opt.textContent = entry
+        ? `${short[l] ?? l.toUpperCase()} · ${entry.samples === 0 ? '~' : ''}$${(entry.cents / 100).toFixed(3)}`
+        : (short[l] ?? l.toUpperCase());
       this.genQualitySel.appendChild(opt);
     }
     this.genQualitySel.value = (levels as string[]).includes(previous) ? previous : 'low';
@@ -897,11 +899,14 @@ export class SpriteToolScene extends Phaser.Scene {
   /**
    * The name a busy label should call this provider — stage text must say
    * what is working and whether it costs anything (see Progress feedback).
-   * `undefined` means the server default, which is gpt-image-2.5.
+   * `undefined` means the server default, which is OpenAI. `op` matters there:
+   * flare generates, sunburst edits, and the label names the one that runs.
    */
-  private providerTag(id?: string, family?: string): string {
+  private providerTag(id?: string, family?: string, op: ImageOp = 'generate'): string {
+    const named = modelTag(id, op);
+    if (named) return named;
     const p = id ? this.providers.find((x) => x.id === id) : undefined;
-    if (!p || p.id === 'openai') return 'GPT-IMAGE-2.5';
+    if (!p) return 'GPT-IMAGE-2.5';
     // Name the MODEL that will actually run, not just the provider — the
     // family can differ from the picker's selection (capability routing).
     const model = family ? p.models?.find((m) => m.id === family) : undefined;
@@ -1224,10 +1229,10 @@ export class SpriteToolScene extends Phaser.Scene {
           'success',
         );
       }, {
-        // Per provider AND count: one gpt-image-2.5 grid call vs N composed
-        // local renders differ by an order of magnitude — never share averages.
-        key: `anchor:candidates:${this.genProviderSel.value || 'openai'}:${count}:${this.renderSizeFor(this.genProviderSel, this.genSizeSel) ?? 'std'}`,
-        fallbackMs: 12000 * count,
+        // Per provider, model AND count: one gpt-image-2.5 grid call vs N
+        // composed local renders differ by an order of magnitude — never share averages.
+        key: `anchor:candidates:${timingTag(this.genProviderSel.value, 'generate')}:${count}:${this.renderSizeFor(this.genProviderSel, this.genSizeSel) ?? 'std'}`,
+        fallbackMs: scaleFallback(12000 * count, this.genProviderSel.value, 'generate'),
       }, {
         // The server's op layer says which candidate is rendering — light
         // the chips from truth, not from guesses.
@@ -2136,7 +2141,7 @@ export class SpriteToolScene extends Phaser.Scene {
     await this.busy(`RE-FORGING THE ${dir.toUpperCase()} ANCHOR...`, async () => {
       UISound.play('generate');
       HudShell.setBusyLabel(
-        `${this.providerTag(provider, family)} · ${fromPrimary ? `TURNING THE ${primary.toUpperCase()} ANCHOR INTO ${dir.toUpperCase()}` : `REDRAWING THE ${dir.toUpperCase()} ANCHOR`}` +
+        `${this.providerTag(provider, family, 'edit')} · ${fromPrimary ? `TURNING THE ${primary.toUpperCase()} ANCHOR INTO ${dir.toUpperCase()}` : `REDRAWING THE ${dir.toUpperCase()} ANCHOR`}` +
           `${notes ? ' WITH YOUR CORRECTIONS' : ''}...`,
       );
       // Keep the drawing we are about to replace (the modal restores it).
@@ -2170,7 +2175,10 @@ export class SpriteToolScene extends Phaser.Scene {
       void HudShell.refreshSpend();
       UISound.play('complete');
       HudShell.toast(`${dir.toUpperCase()} ANCHOR RE-FORGED — ITS CLIPS STILL USE THE OLD POSE UNTIL REMADE`, 'success');
-    }, { key: 'anchor:regen', fallbackMs: 38000 });
+    }, {
+      key: `anchor:regen:${timingTag(provider, 'edit')}`,
+      fallbackMs: scaleFallback(38000, provider, 'edit'),
+    });
   }
 
   /**
@@ -2452,7 +2460,7 @@ export class SpriteToolScene extends Phaser.Scene {
             await this.deriveAnchorView(wsId, view, free.from, free);
           } else {
             HudShell.setBusyLabel(
-              `${i + 1}/${plan.length} ${this.providerTag(this.editProvider(), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'))} · EDITING THE ${primary.toUpperCase()} ANCHOR INTO THE ${view.toUpperCase()} VIEW...`,
+              `${i + 1}/${plan.length} ${this.providerTag(this.editProvider(), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'), 'edit')} · EDITING THE ${primary.toUpperCase()} ANCHOR INTO THE ${view.toUpperCase()} VIEW...`,
             );
             await api.aiImage({
               prompt: '',
@@ -2486,7 +2494,10 @@ export class SpriteToolScene extends Phaser.Scene {
         UISound.play('complete');
         HudShell.toast('ANCHOR CHAIN COMPLETE — ANIMATIONS FORGE FROM THE MATCHING VIEW', 'success');
       },
-      { key: `anchor:views:${paid}`, fallbackMs: Math.max(4000, 38000 * paid) },
+      {
+        key: `anchor:views:${timingTag(this.editProvider(), 'edit')}:${paid}`,
+        fallbackMs: Math.max(4000, scaleFallback(38000 * paid, this.editProvider(), 'edit')),
+      },
     );
   }
 
@@ -2503,7 +2514,7 @@ export class SpriteToolScene extends Phaser.Scene {
     await this.busy(`STRIPPING PROPS & FX FROM THE ${primary.toUpperCase()} ANCHOR...`, async () => {
       UISound.play('generate');
       HudShell.setBusyLabel(
-        `${this.providerTag(this.editProvider(), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'))} · REMOVING PROPS, GLOWS & EFFECTS FROM THE ANCHOR...`,
+        `${this.providerTag(this.editProvider(), this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'), 'edit')} · REMOVING PROPS, GLOWS & EFFECTS FROM THE ANCHOR...`,
       );
       await api.aiImage({
         prompt: '',
@@ -2542,7 +2553,10 @@ export class SpriteToolScene extends Phaser.Scene {
             : 'ANCHOR RESET & GATE PASSED — ALL VIEWS REBUILT',
         gate.pass && stale === 0 ? 'success' : 'error',
       );
-    }, { key: 'anchor:reset', fallbackMs: 38000 });
+    }, {
+      key: `anchor:reset:${timingTag(this.editProvider(), 'edit')}`,
+      fallbackMs: scaleFallback(38000, this.editProvider(), 'edit'),
+    });
   }
 
   private buildAnimPanel() {
@@ -3021,7 +3035,7 @@ export class SpriteToolScene extends Phaser.Scene {
       ];
       HudShell.setBusySteps(steps);
       HudShell.setBusyLabel(
-        `${this.providerTag(this.providerFor(this.animProviderSel), this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'animation-frame'))} · GENERATING ${cat.toUpperCase()} SHEET — VALIDATION GATE & RETRY MAY RUN...`,
+        `${this.providerTag(this.providerFor(this.animProviderSel), this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'animation-frame'), 'edit')} · GENERATING ${cat.toUpperCase()} SHEET — VALIDATION GATE & RETRY MAY RUN...`,
       );
       const rawFile = `anim_${cat}_raw.png`;
       const sheetFile = `anim_${cat}_sheet.png`;
@@ -3139,13 +3153,13 @@ export class SpriteToolScene extends Phaser.Scene {
         );
       }
       },
-      // Keyed by provider + frame count: gpt-image-2.5 draws one sheet, Retro
-      // Diffusion queues a dedicated render, local ComfyUI renders per frame —
-      // their durations have nothing in common, so they must not share a
-      // learned average (progress-feedback: per-provider buckets).
+      // Keyed by provider, model + frame count: gpt-image-2.5-sunburst edits
+      // one sheet, Retro Diffusion queues a dedicated render, local ComfyUI
+      // renders per frame — their durations have nothing in common, so they
+      // must not share a learned average (progress-feedback: per-model buckets).
       {
-        key: `anim:${this.animProviderSel.value || 'openai'}:${count}:${this.renderSizeFor(this.animProviderSel, this.animSizeSel) ?? 'std'}`,
-        fallbackMs: 30000 + count * 2500,
+        key: `anim:${timingTag(this.animProviderSel.value, 'edit')}:${count}:${this.renderSizeFor(this.animProviderSel, this.animSizeSel) ?? 'std'}`,
+        fallbackMs: scaleFallback(30000 + count * 2500, this.animProviderSel.value, 'edit'),
       },
     );
   }
@@ -3351,7 +3365,8 @@ export class SpriteToolScene extends Phaser.Scene {
           steps[k]!.state = 'active';
           HudShell.setBusySteps(steps);
           HudShell.setBusyLabel(
-            `${k + 1}/${flagged.length} REDRAWING FRAME ${index + 1} AGAINST THE ${dir.toUpperCase()} ANCHOR...`,
+            `${k + 1}/${flagged.length} ${this.providerTag(this.providerFor(this.animProviderSel), this.modelFamilyFor(this.animProviderSel, this.animModelSel, 'repair'), 'edit')} · ` +
+              `REDRAWING FRAME ${index + 1} AGAINST THE ${dir.toUpperCase()} ANCHOR...`,
           );
           try {
             const res = await api.repairFrames({
@@ -3412,7 +3427,10 @@ export class SpriteToolScene extends Phaser.Scene {
           failures.length === 0 ? 'success' : 'error',
         );
       },
-      { key: 'repair:frame', fallbackMs: 22000 * flagged.length },
+      {
+        key: `repair:frame:${timingTag(this.animProviderSel.value, 'edit')}:${flagged.length}`,
+        fallbackMs: scaleFallback(22000 * flagged.length, this.animProviderSel.value, 'edit'),
+      },
     );
   }
 

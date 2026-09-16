@@ -1,33 +1,51 @@
-import { generateImage, editImage } from '../services/openaiImage.js';
+import type { ImageOp, ImageQualityTier } from '@genvy/shared';
+import { config } from '../config.js';
+import { generateImage, editImage, type OpenAiImageResult } from '../services/openaiImage.js';
 import type { ImageProvider, ImageGenerateRequest, ImageEditRequest } from './types.js';
 import { offlineError } from './types.js';
+import { canvasOf, imageCosts, usageCents } from './openaiPricing.js';
+
+export { OPENAI_IMAGE_PRICE } from './openaiPricing.js';
 
 /**
- * OpenAI gpt-image-2.5 (never gpt-image-1 or -2) — the reference provider the whole
- * M1 flow was proven on: native alpha via `background: 'transparent'`,
+ * OpenAI gpt-image-2.5 (never gpt-image-1 or -2) — the reference provider the
+ * whole M1 flow was proven on: native alpha via `background: 'transparent'`,
  * multi-reference edits with role annotations, moderation 422 handled by the
- * caller's sanitize-and-retry pass. Wraps services/openaiImage.ts unchanged.
- */
-/**
- * Published gpt-image-2.5 image prices, in CENTS per image, by canvas and
- * quality. Square is not a discount on the tall/wide canvas — it costs MORE
- * at every tier — so this is a table, not a ratio applied to one row.
+ * caller's sanitize-and-retry pass.
  *
- *              1024x1024   1024x1536 / 1536x1024
- *   low          $0.006            $0.005
- *   medium       $0.053            $0.041
- *   high         $0.211            $0.165
+ * The family ships as two variants at identical token rates, and the provider
+ * runs each where it is strongest: flare (fast) for text-to-image, sunburst
+ * (tighter subject preservation) for every reference edit — anchor turns,
+ * animation sheets, frame repair — where identity drift is the failure.
  */
-export const OPENAI_IMAGE_PRICE: Record<'square' | 'tall', Record<string, number>> = {
-  square: { low: 0.6, medium: 5.3, high: 21.1 },
-  tall: { low: 0.5, medium: 4.1, high: 16.5 },
-};
-
-export function createOpenAiProvider(apiKey: string): ImageProvider {
+export function createOpenAiProvider(
+  apiKey: string,
+  models: Record<ImageOp, string> = { generate: config.openaiImageModel, edit: config.openaiEditModel },
+): ImageProvider {
   const live = apiKey.length > 0;
+
+  /**
+   * Book what the call really cost, from the usage OpenAI reported: the
+   * route's ledger takes it as exact, and the price book learns from it so
+   * the next preview is quoted from real bills instead of a seed.
+   */
+  const settle = (op: ImageOp, req: ImageGenerateRequest, result: OpenAiImageResult): Buffer => {
+    if (result.usage) {
+      const cents = usageCents(models[op], op, result.usage);
+      imageCosts.observe(models[op], op, canvasOf(req.orientation), req.quality ?? 'low', cents);
+      req.onBilled?.({ cents });
+    }
+    return result.image;
+  };
+
   return {
     id: 'openai',
-    name: 'OpenAI gpt-image-2.5',
+    name: 'OpenAI GPT Image 2.5',
+    modelIds: models,
+    prices: () => ({
+      generate: imageCosts.table(models.generate, 'generate'),
+      edit: imageCosts.table(models.edit, 'edit'),
+    }),
     live,
     capabilities: {
       generate: true,
@@ -39,29 +57,39 @@ export function createOpenAiProvider(apiKey: string): ImageProvider {
       maxSize: 1536,
       qualityLevels: ['low', 'medium', 'high'],
       /**
-       * Priced from OPENAI_IMAGE_PRICE — both the canvas and the quality
-       * matter. High is 35x low on a square canvas, so the picker warns
-       * before it is chosen: a 4-candidate high-tier forge is $0.84.
+       * The learned price for this model, op, canvas and quality — both the
+       * canvas and the quality matter (high is ~35x low). Used before a call
+       * for previews, and booked only when a call reported no usage.
        */
       costEstimate: (req) => {
-        const quality = ('quality' in req ? req.quality : undefined) ?? 'low';
-        const square = 'orientation' in req && req.orientation === 'square';
-        return OPENAI_IMAGE_PRICE[square ? 'square' : 'tall'][quality] ?? 0;
+        const op: ImageOp = 'references' in req || 'anchor' in req ? 'edit' : 'generate';
+        const quality: ImageQualityTier = ('quality' in req ? req.quality : undefined) ?? 'low';
+        const orientation = 'orientation' in req ? req.orientation : undefined;
+        return imageCosts.estimate(models[op], op, canvasOf(orientation), quality).cents;
       },
     },
     async generate(req: ImageGenerateRequest): Promise<Buffer> {
       if (!live) throw offlineError('openai');
-      return generateImage(req.prompt, req.orientation, req.transparent ?? false, req.quality ?? 'low');
+      const result = await generateImage(
+        req.prompt,
+        req.orientation,
+        req.transparent ?? false,
+        req.quality ?? 'low',
+        models.generate,
+      );
+      return settle('generate', req, result);
     },
     async edit(req: ImageEditRequest): Promise<Buffer> {
       if (!live) throw offlineError('openai');
-      return editImage(
+      const result = await editImage(
         req.prompt,
         req.references.map((r) => r.image),
         req.orientation,
         req.transparent ?? false,
         req.quality ?? 'low',
+        models.edit,
       );
+      return settle('edit', req, result);
     },
   };
 }

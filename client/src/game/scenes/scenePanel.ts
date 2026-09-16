@@ -4,6 +4,7 @@ import { UISound } from '../../hud/UISound.js';
 import { api } from '../../api/client.js';
 import { collection } from '../../state/collection.js';
 import { ProviderControls } from '../../hud/providerControls.js';
+import { scaleFallback } from '../../hud/imageModels.js';
 import { field, textArea, autoGrow, GenvyButton } from '../../hud/components.js';
 import { saveDraft, loadDraft, clearDraft } from '../../state/drafts.js';
 
@@ -308,8 +309,8 @@ export function buildScenePanel(hooks: ScenePanelHooks) {
         HudShell.toast(open ? 'SCENE REPAINTED' : 'SCENE PAINTED & SAVED', 'success');
       },
       {
-        key: `scene:${controls.providerId() ?? 'openai'}:${controls.renderSize() ?? 'std'}`,
-        fallbackMs: 45000,
+        key: `scene:${controls.timingTag('generate')}:${controls.renderSize() ?? 'std'}`,
+        fallbackMs: scaleFallback(45000, controls.providerId(), 'generate'),
       },
     );
   });

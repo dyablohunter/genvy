@@ -1,4 +1,4 @@
-import type { ImageOrientation, StyleContract } from '@genvy/shared';
+import type { ImageOp, ImageOrientation, ImagePriceTable, StyleContract } from '@genvy/shared';
 
 /**
  * Sprite Pipeline v2 — provider abstraction (docs/sprite-pipeline-v2.md §A).
@@ -121,6 +121,10 @@ export interface ImageProvider {
   name: string;
   /** Selectable models, for providers hosting several (refreshed with health). */
   models?: ProviderModelInfo[];
+  /** The model id each kind of call runs on, when the provider splits them (OpenAI). Labels and timing buckets name these. */
+  modelIds?: Record<ImageOp, string>;
+  /** Current per-image prices by op, canvas and quality (learned from billed calls) — the table every cost label reads. */
+  prices?: () => Record<ImageOp, ImagePriceTable>;
   /** Whether the required .env key / service is present. Offline providers stay registered so the HUD can list them dimmed. */
   live: boolean;
   /** What the user should do when this provider is offline (defaults to the API-key hint). */

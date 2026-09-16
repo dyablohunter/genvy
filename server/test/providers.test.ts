@@ -357,15 +357,16 @@ describe('canvasFor', () => {
 /**
  * gpt-image-2.5 prices by canvas AND quality, and a square canvas is dearer
  * than the tall/wide one at every tier — the opposite of what a pixel-count
- * guess predicts. Estimating it wrong makes the header spend contradict the
- * button that spent it, so the published table is pinned here.
+ * guess predicts. Until billed calls teach the price book otherwise, previews
+ * are seeded from the published gpt-image-2 table (same token rates), which is
+ * pinned here. Learning from real usage is covered in openaiPricing.test.ts.
  */
-describe('gpt-image-2.5 cost by canvas', () => {
+describe('gpt-image-2.5 cost by canvas (unlearned seed)', () => {
   const openai = createOpenAiProvider('test-key').capabilities.costEstimate;
   const req = (orientation: 'square' | 'landscape' | 'portrait', quality: 'low' | 'medium' | 'high') =>
     ({ prompt: 'x', orientation, quality }) as Parameters<typeof openai>[0];
 
-  it('matches the published prices, in cents', () => {
+  it('seeds generations with the published gpt-image-2 prices, in cents', () => {
     // 1024x1024: $0.006 / $0.053 / $0.211
     expect(openai(req('square', 'low'))).toBeCloseTo(0.6, 6);
     expect(openai(req('square', 'medium'))).toBeCloseTo(5.3, 6);

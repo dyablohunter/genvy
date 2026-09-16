@@ -72,6 +72,8 @@ export class ProviderRegistry {
       // Free providers get labelled in the picker — cost is a capability fact.
       free: p.capabilities.costEstimate({ prompt: 'x', orientation: 'portrait' }) === 0,
       ...(p.models ? { models: p.models } : {}),
+      ...(p.modelIds ? { modelIds: p.modelIds } : {}),
+      ...(p.prices ? { prices: p.prices() } : {}),
       capabilities: {
         generate: p.capabilities.generate,
         edit: p.capabilities.edit,

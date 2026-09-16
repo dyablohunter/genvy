@@ -21,7 +21,8 @@ async function main() {
   console.log('   OK:', concept.name, '-', concept.imagePrompt.slice(0, 80));
 
   console.log('2/3 GPT image generation (low quality, portrait)...');
-  const png = await generateImage(spriteSheetImagePrompt(concept.imagePrompt), 'portrait');
+  const { image: png, usage } = await generateImage(spriteSheetImagePrompt(concept.imagePrompt), 'portrait');
+  console.log('   usage:', JSON.stringify(usage ?? 'none reported'));
   const outDir = path.join(config.libraryDir, 'files', 'smoke-test');
   await fs.mkdir(outDir, { recursive: true });
   await fs.writeFile(path.join(outDir, 'raw.png'), png);

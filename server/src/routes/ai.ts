@@ -9,9 +9,10 @@ import {
   newAssetId,
   getStylePreset,
   getSubject,
+  type ImageOp,
 } from '@genvy/shared';
 import { generateJson, generateText } from '../services/deepseek.js';
-import { providerRegistry } from '../providers/index.js';
+import { providerRegistry, type ImageProvider } from '../providers/index.js';
 import type { BackgroundMode } from '../prompts/index.js';
 import {
   TOOL_SYSTEM_PROMPTS,
@@ -85,7 +86,7 @@ interface AiImageBody {
   outName?: string;
   styleHint?: string;
   pose?: string;
-  /** Image provider id; default 'openai' (gpt-image-2.5) — the proven M1 path. */
+  /** Image provider id; default 'openai' (gpt-image-2.5: flare generates, sunburst edits) — the proven M1 path. */
   provider?: string;
   /** Model family for multi-model providers (the local service); others ignore it. */
   modelFamily?: string;
@@ -123,6 +124,15 @@ interface AiImageBody {
 }
 
 const EDIT_KINDS = new Set(['animation', 'anchorDirectional', 'neutralReset', 'sceneCutout']);
+
+/**
+ * What a stage label calls the worker: the model that will actually run this
+ * kind of call when the provider splits them (flare draws, sunburst edits),
+ * otherwise the provider's name.
+ */
+function workerName(provider: ImageProvider, op: ImageOp): string {
+  return (provider.modelIds?.[op] ?? provider.name).toUpperCase();
+}
 
 export function registerAiRoutes(app: FastifyInstance, library: Library) {
   app.post<{ Body: AiTextRequest }>('/api/ai/text', async (req) => {
@@ -286,7 +296,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
       tileset: 'DRAWING THE TILE GRID',
       scene: 'PAINTING THE SCENE',
     };
-    activity.begin(`${provider.name.toUpperCase()} · ${WORK[kind ?? 'raw'] ?? 'DRAWING'}...`);
+    activity.begin(`${workerName(provider, kind && EDIT_KINDS.has(kind) ? 'edit' : 'generate')} · ${WORK[kind ?? 'raw'] ?? 'DRAWING'}...`);
     try {
     let png: Buffer;
     let attemptsUsed = 0;
@@ -578,7 +588,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
         const cells: pipe.RawImage[] = [];
         for (let i = 0; i < count; i++) {
           activity.update({
-            label: `${provider.name.toUpperCase()} · CANDIDATE ${i + 1} OF ${count}...`,
+            label: `${workerName(provider, 'generate')} · CANDIDATE ${i + 1} OF ${count}...`,
             step: i + 1,
             steps: count,
           });
@@ -647,7 +657,7 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
       'horizontal',
     );
 
-    activity.begin(`${provider.name.toUpperCase()} · MODIFYING THE PANEL...`);
+    activity.begin(`${workerName(provider, 'edit')} · MODIFYING THE PANEL...`);
     let reportedExact = false;
     const onBilled = (info: { cents?: number; balanceCents?: number }) => {
       if (info.cents !== undefined) reportedExact = true;

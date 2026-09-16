@@ -32,6 +32,7 @@ import type {
   ExportSpriteResponse,
 } from '@genvy/shared';
 import { aiImageBucket } from '../hud/progress.js';
+import { rememberProviders } from '../hud/imageModels.js';
 
 /** Anything listening (the top-bar spend readout) refetches /api/usage. */
 function bumpUsage<T>(p: Promise<T>): Promise<T> {
@@ -92,7 +93,11 @@ export const api = {
     request<{
       ok: boolean;
       ai: { text: boolean; image: boolean; providers?: ImageProviderStatus[] };
-    }>('GET', '/api/health'),
+    }>('GET', '/api/health').then((r) => {
+      // Labels and timing buckets name the model each call runs on.
+      rememberProviders(r.ai.providers ?? []);
+      return r;
+    }),
 
   listAssets: (params: { type?: AssetType; q?: string } = {}) => {
     const qs = new URLSearchParams();

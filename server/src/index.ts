@@ -11,6 +11,7 @@ import { registerImageOpRoutes } from './routes/imageOps.js';
 import { registerExportRoutes } from './routes/export.js';
 import { providerRegistry } from './providers/index.js';
 import { usage } from './services/usage.js';
+import { imageCosts } from './providers/openaiPricing.js';
 import { activity } from './services/activity.js';
 
 async function main() {
@@ -18,6 +19,7 @@ async function main() {
   const library = new Library(config.libraryDir);
   await library.init();
   await usage.init(config.libraryDir);
+  await imageCosts.init(config.libraryDir);
 
   await app.register(cors, { origin: true });
   await app.register(multipart, { limits: { fileSize: 32 * 1024 * 1024 } });
@@ -47,7 +49,7 @@ async function main() {
     ai: { ...aiStatus(), providers: providerRegistry.status() },
   }));
 
-  /** Estimated AI spend per provider (from published pricing, not billing). */
+  /** AI spend per provider — exact where the provider reports usage or cost, estimated otherwise. */
   app.get('/api/usage', async () => usage.snapshot());
 
   /** Live stage/step of the in-flight AI op — the HUD's bar follows this. */

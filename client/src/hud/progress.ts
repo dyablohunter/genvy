@@ -8,6 +8,8 @@
  * never by asset id. See CLAUDE.md "Progress feedback".
  */
 
+import { modelTag, opForKind, scaleFallback, timingTag } from './imageModels.js';
+
 const KEY = 'genvy-durations';
 /** Rolling window: recent runs keep influence when providers/models change. */
 const MAX_SAMPLES = 20;
@@ -63,46 +65,53 @@ export function aiImageBucket(body: { kind?: string; frames?: number; provider?:
   label: string;
 } {
   const kind = body.kind ?? 'raw';
-  const provider = (body.provider ?? 'openai').toUpperCase().replace('OPENAI', 'GPT-IMAGE-2.5');
+  const op = opForKind(kind);
+  // Name and time the MODEL: flare and sunburst differ by ~2x in latency.
+  const name = modelTag(body.provider, op) ?? (body.provider ?? 'openai').toUpperCase();
+  const tag = timingTag(body.provider, op);
+  const bucket = (b: { key: string; fallbackMs: number; label: string }) => ({
+    ...b,
+    fallbackMs: scaleFallback(b.fallbackMs, body.provider, op),
+  });
   switch (kind) {
     case 'anchor':
     case 'variants':
-      return {
-        key: `img:${provider}:anchor`,
+      return bucket({
+        key: `img:${tag}:anchor`,
         fallbackMs: 48000,
-        label: `${provider} · DRAWING 4 NEUTRAL ANCHOR CANDIDATES...`,
-      };
+        label: `${name} · DRAWING 4 NEUTRAL ANCHOR CANDIDATES...`,
+      });
     case 'anchorDirectional':
-      return {
-        key: `img:${provider}:anchorDirectional`,
+      return bucket({
+        key: `img:${tag}:anchorDirectional`,
         fallbackMs: 38000,
-        label: `${provider} · EDITING THE ANCHOR INTO A NEW VIEW...`,
-      };
+        label: `${name} · EDITING THE ANCHOR INTO A NEW VIEW...`,
+      });
     case 'neutralReset':
-      return {
-        key: `img:${provider}:neutralReset`,
+      return bucket({
+        key: `img:${tag}:neutralReset`,
         fallbackMs: 38000,
-        label: `${provider} · STRIPPING PROPS & EFFECTS FROM THE ANCHOR...`,
-      };
+        label: `${name} · STRIPPING PROPS & EFFECTS FROM THE ANCHOR...`,
+      });
     case 'animation': {
       const frames = body.frames ?? 4;
-      return {
-        key: `img:${provider}:animation:${frames}`,
+      return bucket({
+        key: `img:${tag}:animation:${frames}`,
         fallbackMs: 30000 + frames * 2500,
-        label: `${provider} · DRAWING A ${frames}-FRAME ANIMATION SHEET...`,
-      };
+        label: `${name} · DRAWING A ${frames}-FRAME ANIMATION SHEET...`,
+      });
     }
     case 'tileset':
-      return {
-        key: `img:${provider}:tileset`,
+      return bucket({
+        key: `img:${tag}:tileset`,
         fallbackMs: 50000,
-        label: `${provider} · DRAWING THE TILE GRID...`,
-      };
+        label: `${name} · DRAWING THE TILE GRID...`,
+      });
     default:
-      return {
-        key: `img:${provider}:raw`,
+      return bucket({
+        key: `img:${tag}:raw`,
         fallbackMs: 35000,
-        label: `${provider} · GENERATING IMAGE...`,
-      };
+        label: `${name} · GENERATING IMAGE...`,
+      });
   }
 }

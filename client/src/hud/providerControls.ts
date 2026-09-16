@@ -1,6 +1,7 @@
-import type { ImageProviderStatus } from '@genvy/shared';
+import type { ImageOp, ImageProviderStatus } from '@genvy/shared';
 import { field } from './components.js';
 import { UISound } from './UISound.js';
+import { modelTag, timingTag } from './imageModels.js';
 
 /**
  * The provider / model / render-size / quality / candidates control set the
@@ -29,23 +30,6 @@ const SIZE_LABELS: Record<number, string> = {
   640: '640 · BALANCED',
   768: '768 · QUALITY',
   1024: '1024 · MAX (SLOW)',
-};
-
-/**
- * Published gpt-image-2.5 prices in dollars per image, by canvas and quality.
- * Square is NOT cheaper than the tall/wide canvas — it costs more at every
- * tier — so this is a table rather than a ratio off one row. It mirrors
- * OPENAI_IMAGE_PRICE on the server: the preview must agree with what is
- * actually booked, or the header spend contradicts the button that spent it.
- *
- *              1024x1024   1024x1536 / 1536x1024
- *   low          $0.006            $0.005
- *   medium       $0.053            $0.041
- *   high         $0.211            $0.165
- */
-const QUALITY_PRICE: Record<'square' | 'tall', Record<string, number>> = {
-  square: { low: 0.006, medium: 0.053, high: 0.211 },
-  tall: { low: 0.005, medium: 0.041, high: 0.165 },
 };
 
 export class ProviderControls {
@@ -105,9 +89,29 @@ export class ProviderControls {
     this.onChange?.();
   }
 
-  /** Dollar price of one image at a quality, for the current canvas. */
-  private price(quality: string | undefined): number {
-    return QUALITY_PRICE[this.canvas === 'square' ? 'square' : 'tall'][quality ?? 'low'] ?? 0;
+  /** What this control set's workflow sends: a fresh generation, or an edit of a reference. */
+  private defaultOp(): ImageOp {
+    return this.opts.workflow === 'anchor-generate' ? 'generate' : 'edit';
+  }
+
+  /**
+   * Price of one image at a quality, for the current canvas and op, read from
+   * the provider's own table in /api/health. The server learns that table from
+   * billed calls, so the preview and the booked spend come from ONE source —
+   * there is no client copy to fall out of step. `approx` means no real call
+   * has priced this bucket yet.
+   */
+  private price(
+    quality: string | undefined,
+    op: ImageOp = this.defaultOp(),
+  ): { dollars: number; approx: boolean } {
+    const tier = (quality ?? 'low') as 'low' | 'medium' | 'high';
+    const entry = this.current()?.prices?.[op][this.canvas === 'square' ? 'square' : 'tall'][tier];
+    return entry ? { dollars: entry.cents / 100, approx: entry.samples === 0 } : { dollars: 0, approx: true };
+  }
+
+  private formatPrice(p: { dollars: number; approx: boolean }, calls = 1): string {
+    return `${p.approx ? '~' : ''}$${(p.dollars * calls).toFixed(3)}`;
   }
 
   /** (Re)label the quality picker with prices for the current canvas. */
@@ -120,7 +124,7 @@ export class ProviderControls {
     for (const l of levels) {
       const opt = document.createElement('option');
       opt.value = l;
-      opt.textContent = `${l.toUpperCase()} · $${this.price(l).toFixed(3)}`;
+      opt.textContent = `${l.toUpperCase()} · ${this.formatPrice(this.price(l))}`;
       this.qualitySel.appendChild(opt);
     }
     this.qualitySel.value = levels.some((l) => l === previous) ? previous : 'low';
@@ -180,6 +184,9 @@ export class ProviderControls {
         ? previous
         : (live.find((p) => p.id === 'openai') ?? live[0])?.id ?? '';
     this.refreshVisibility();
+    // A fresh roster carries freshly learned prices — relabel even when the
+    // tiers themselves did not change.
+    this.fillQualityOptions(true);
     this.onChange?.();
   }
 
@@ -258,14 +265,14 @@ export class ProviderControls {
       : undefined;
   }
 
-  /** "FREE" or an estimate like "$0.005" for `imageCalls` images. */
-  costPreview(imageCalls = 1): string {
+  /** "FREE" or a price like "$0.005" ("~$0.006" while unlearned) for `imageCalls` images of `op`. */
+  costPreview(imageCalls = 1, op: ImageOp = this.defaultOp()): string {
     const p = this.current();
     if (!p) return '';
     if (p.free) return 'FREE';
-    const per = this.price(this.quality());
+    const per = this.price(this.quality(), op);
     const calls = p.capabilities.gridSheets === false ? (this.candidates() ?? 1) * imageCalls : imageCalls;
-    return per ? `$${(per * calls).toFixed(3)}` : '';
+    return per.dollars ? this.formatPrice(per, calls) : '';
   }
 
   /**
@@ -283,13 +290,20 @@ export class ProviderControls {
     return null;
   }
 
-  /** Name of the model/provider that will run, for busy labels. */
-  tag(): string {
+  /** Name of the model/provider that will run `op`, for busy labels. */
+  tag(op: ImageOp = this.defaultOp()): string {
     const p = this.current();
-    if (!p || p.id === 'openai') return 'GPT-IMAGE-2.5';
+    // Providers that split models per op (OpenAI) name the one that runs.
+    const named = modelTag(p?.id, op);
+    if (named || !p) return named ?? 'GPT-IMAGE-2.5';
     const family = this.modelFamily();
     const model = family ? p.models?.find((m) => m.id === family) : undefined;
     const name = model ? model.label.toUpperCase() : p.name.toUpperCase();
     return p.free ? `${name} (FREE)` : name;
+  }
+
+  /** Timing-bucket segment for `op`: the provider plus the model that runs it. */
+  timingTag(op: ImageOp = this.defaultOp()): string {
+    return timingTag(this.providerId(), op);
   }
 }
