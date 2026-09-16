@@ -133,7 +133,7 @@ Later: **M2** visual family (Animation, FX, Parallax, Portraits) → **M3** acto
 
 ## What changed since (as built)
 
-- **Image model**: `gpt-image-1` → **`gpt-image-2`**, now **`gpt-image-2.5`** (project rule: always the latest gpt-image), configurable via `OPENAI_IMAGE_MODEL`.
+- **Image model**: `gpt-image-1` → **`gpt-image-2`**, now the **`gpt-image-2.5`** family — `-flare` generates, `-sunburst` edits (project rule: always the latest gpt-image), configurable via `OPENAI_IMAGE_MODEL`.
 - **Sprite flow**: the single 4×6 pose sheet was replaced by a three-stage flow — one image of **4 design variants** → lock one as a reference → forge **one animation at a time** via the images/**edits** endpoint using that reference (far better character consistency). Each variant is its own workspace with its own clips and saves.
 - **Backgrounds**: transparent output requested directly instead of magenta chroma-keying; `remove-bg` is now only for uploads with solid backdrops. Optional green cell borders (stripped by the pipeline) are an experimental separation aid.
 - **Slicing**: fixed grid slicing replaced by **alpha-projection detection** with axis-aware splitting of merged poses, plus a manual mode (draw rectangles, shift-lasso, edge drag, frame delete/restore ghosts, Ctrl+Z) that union-masks the pixels of each frame.

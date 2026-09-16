@@ -10,15 +10,40 @@ The creation process is designed to feel like a game: a sci-fi command center, h
 - **server/** — Node + Fastify. Proxies AI calls (keys never reach the browser), persists the collection to `library/`, and runs the image pipeline (sharp).
 - **shared/** — zod schemas for every asset type + typed API contracts, imported by both sides.
 
-AI: **DeepSeek** (`deepseek-chat`, JSON mode) for concepts/configs/layouts; **OpenAI gpt-image-2.5** (low quality, 1024x1536 / 1536x1024) for pose sheets and tilesets, post-processed into game-ready assets.
+AI: **DeepSeek** (`deepseek-chat`, JSON mode) for concepts/configs/layouts. Images go through a provider registry:
+
+- **OpenAI gpt-image-2.5** (the default) — two variants at the same token rates, split by job: **`gpt-image-2.5-flare`** (fast) draws new images — anchor candidates, tile grids, scenes — and **`gpt-image-2.5-sunburst`** (tighter subject preservation) does every reference edit — anchor turns, animation sheets, frame repair, panel edits. Canvases are 1024x1536 / 1536x1024 / 1024x1024; quality is one of OpenAI's five tiers, **low · medium · high · xhigh · max** (low by default).
+- **Retro Diffusion** (optional key) — true pixel art and a dedicated animation endpoint.
+- **Local ComfyUI** (optional, free) — pose-conditioned renders via the `local-inference/` service; see `docs/local-inference-setup.md`.
+
+Outputs are post-processed into game-ready assets.
+
+**Spend and prices.** OpenAI spend is booked from the token usage each response reports ($5 text in, $8 image in, $30 image out per 1M tokens), so the header shows what was billed, not a guess. Price labels come from `/api/health`: until a tier has been billed once they show `~# GENVY
+
+A gamified, HUD-based suite of AI-first creation tools for building 2D game content with **Phaser 4**. You forge assets — characters, tilesets, worlds, and eventually sounds, FX, dialogue, quests — into a persistent **collection** on disk, which a later phase assembles into playable games.
+
+The creation process is designed to feel like a game: a sci-fi command center, holographic tool stations, synthesized UI sounds, and loot-drop moments when an asset is forged.
+
+## Stack
+
+- **client/** — Vite + TypeScript + Phaser 4. The workspace is a live Phaser scene; the UI is a futuristic HTML HUD overlay (custom elements, WebAudio-synthesized sfx, Web Animations API).
+- **server/** — Node + Fastify. Proxies AI calls (keys never reach the browser), persists the collection to `library/`, and runs the image pipeline (sharp).
+- **shared/** — zod schemas for every asset type + typed API contracts, imported by both sides.
+
+, seeded with the exact output cost from OpenAI's calculator formula (1536x1024 low/medium/high/xhigh/max = $0.00474/$0.01029/$0.04116/$0.07377/$0.16464) plus prompt text; after that, the average of real bills.
 
 ## Setup
 
-1. `.env` in the repo root (already present, gitignored):
+1. `.env` in the repo root (already present, gitignored — `.env.example` lists every option):
    ```
    DEEPSEEK_API_KEY="..."
    OPENAI_API_KEY="..."
+   # optional
+   RETRODIFFUSION_API_KEY="..."
+   OPENAI_IMAGE_MODEL="gpt-image-2.5-flare"     # new images (default)
+   OPENAI_EDIT_MODEL="gpt-image-2.5-sunburst"   # reference edits (default)
    ```
+   There is no bare `gpt-image-2.5` model id — always name a variant. Swap either setting to A/B the variants; prices and progress timings are tracked per model.
 2. `npm install`
 3. `npm run dev` — server on :3020, client on http://localhost:5173
 
@@ -44,7 +69,7 @@ Image pipeline stages are kept on disk (`raw.png` → `keyed.png` → `sheet.png
 ```
 npm run dev          # both servers
 npm run typecheck    # tsc across all workspaces
-npm test             # server unit tests (library CRUD, image pipeline)
+npm test             # unit tests: server (library, image pipeline, providers, pricing) + local-inference
 npm run smoke:ai -w server   # SPENDS CREDITS: one DeepSeek + one image call through the full pipeline
 ```
 

@@ -18,8 +18,9 @@ is being asked to guess, and the gate can only reject guesses. **Pose conditioni
 the guess with a constraint**: render an explicit skeleton per frame, condition generation on
 it via ControlNet/OpenPose, and the leg phase stops being a lottery.
 
-Cost is the second reason. gpt-image-2.5 is $0.005/image; a character with four facings and a
-handful of clips runs into dollars, and every gate retry spends again. Local inference makes
+Cost is the second reason. gpt-image-2.5 runs from ~$0.005 (low) to ~$0.165 (max) per
+1536x1024 image in output alone, plus prompt and reference-image input; a character with four
+facings and a handful of clips runs into dollars, and every gate retry spends again. Local inference makes
 iteration free, which changes what the tool feels like to use.
 
 ## Deliverable

@@ -59,7 +59,8 @@ interface ImageProvider {
 }
 ```
 
-Selection: per-step configurable defaults (concepts→DeepSeek; anchors/sheets→gpt-image-2.5;
+Selection: per-step configurable defaults (concepts→DeepSeek; anchor candidates→gpt-image-2.5-flare;
+anchor turns/sheets/repair→gpt-image-2.5-sunburst;
 pixel-style animation→Retro Diffusion when key present; everything→local when enabled) with a
 per-request override in the UI. A provider registry reports which providers are LIVE based on
 `.env` keys / local service health, so the HUD can show LINK ONLINE/OFFLINE per provider.
@@ -67,7 +68,7 @@ per-request override in the UI. A provider registry reports which providers are 
 **API providers (BYO `.env` keys):**
 | Provider | Use | Notes |
 |---|---|---|
-| OpenAI **gpt-image-2.5** (never gpt-image-1 or -2) | anchors, one-shot idle/attack sheets, edits | native alpha; the chongdashu method is proven on this exact model family |
+| OpenAI **gpt-image-2.5** (never gpt-image-1 or -2) | **flare**: anchor candidates, tile grids, scenes · **sunburst**: anchor turns, animation sheets, frame repair, panel edits | native alpha; the chongdashu method is proven on this exact model family; both variants share token rates, billed from reported usage |
 | Retro Diffusion | pixel-style sprites ≤384px; **animation endpoint** (anchor + action → transparent spritesheet, ~$0.07–0.25) | palette locking, free pixel-fixer endpoint |
 | PixelLab | skeleton-based animation, 4/8-direction rotation | ≤128×128 animation cap — small-sprite tier only |
 | DeepSeek (existing) | concepts, layouts, prompt sanitize, QA feedback hints | |
@@ -104,7 +105,7 @@ Extend `SPRITE_CONCEPT_SYSTEM` output with: style contract selection, palette ro
 (so the anchor stage knows what to STRIP), and the animation plan (existing).
 
 ### C2. Anchor chain (NEW — the core fix)
-1. **Neutral south anchor**: one gpt-image-2.5 (or local) call producing **4 candidate variants**
+1. **Neutral south anchor**: one gpt-image-2.5-flare (or local) call producing **4 candidate variants**
    of the canonical neutral idle — facing camera, no weapons/props/effects, flat chroma
    background, "one logical 256×256 frame delivered at 1024". User picks one (existing
    variant-picker UX is reused). Prompt uses:
@@ -159,7 +160,7 @@ found other models ignore "transparent" or fake it. So:
   1-2-1-2; mirror for the opposite direction. These cost $0.
 - **Provider routing**: pixel styles may route walk/idle/attack to Retro Diffusion's
   animation endpoint (anchor in → transparent sheet out); local route uses per-frame OpenPose
-  + IP-Adapter batch; default route is gpt-image-2.5 sheet generation.
+  + IP-Adapter batch; default route is a gpt-image-2.5-sunburst sheet edit against the anchor.
 - **(Experiment, later)** image-to-video walk cycles: i2v on the directional anchor →
   auto-detect one cycle → pick 8–12 evenly spaced frames ("you will never get walk cycles
   right with image generation alone").
@@ -222,6 +223,14 @@ StyleContract schema + presets in `shared/`, all image prompts rewritten per E1.
 *Dropped:* **Gemini** — it produced magenta/blank frames in testing and was removed entirely.
 *Dropped:* chroma-in-prompt as the default — both live providers have native alpha, so the
 transparent path is the norm and chroma is a fallback only.
+*Updated 2026-09-16 — gpt-image-2.5:* the OpenAI provider runs two model ids by operation
+(`modelIds`): `gpt-image-2.5-flare` for `generate`, `gpt-image-2.5-sunburst` for `edit`
+(`OPENAI_IMAGE_MODEL` / `OPENAI_EDIT_MODEL`) — identity drift across anchor turns and sheets
+is the failure that matters, and sunburst trades latency for subject preservation at the
+same token rates. Its billing is now exact too: each response's `usage` tokens x published
+rates is booked via `onBilled`, and previews come from a price book learned from those
+bills (`providers/openaiPricing.ts`, seeded from OpenAI's calculator formula). Busy labels
+and timing buckets name the model that runs.
 
 **P2 — Anchor chain** ✅ DONE, and generalized well past the original plan
 Variants → pick → blocking lock gate → directional anchors, with per-clip facing. Beyond plan:
@@ -466,7 +475,15 @@ re-run the clip against the new anchor.
 
 - **gpt-image-2.5** (current, `/v1/images/generations` + `/edits`): native alpha via
   `background: 'transparent', output_format: 'png'`; multi-reference edits work with role
-  annotations; moderation 422 → sanitize-and-retry (existing).
+  annotations; moderation 422 → sanitize-and-retry (existing). Ships ONLY as
+  `gpt-image-2.5-flare` (fast, ~50% lower latency than gpt-image-2) and
+  `gpt-image-2.5-sunburst` (slower, tighter edits) — no bare `gpt-image-2.5` id. Token rates
+  $5 text in / $8 image in / $30 image out per 1M, identical for both. Quality tiers
+  low/medium/high/xhigh/max; output tokens follow OpenAI's calculator formula
+  `ceil(q * round(q*short/long) * (2e6 + w*h) / 4e6)` with q = 16/24/48/64/96, e.g.
+  1536x1024 = 158/343/1372/2459/5488 tokens ($0.00474 … $0.16464), 1024x1024 low = 196. The
+  tiers were renamed from gpt-image-2: 2.5 `high` spends gpt-image-2 `medium`'s budget, and
+  `max` is the old `high`. Every response carries `usage`, so spend is exact.
 - **Retro Diffusion** (`POST https://api.retrodiffusion.ai/v1/inferences`, header
   `X-RD-Token`): text→sprite via `prompt` + `prompt_style` (e.g. `rd_pro__default`, 96–256px)
   + `width/height` + `remove_bg` + `reference_images` (rd_pro only); animation via

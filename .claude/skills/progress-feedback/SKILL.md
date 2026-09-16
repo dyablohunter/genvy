@@ -18,12 +18,16 @@ Every AI request — image, video, or text; API provider or local inference — 
    full on completion (`HudShell.showBusy(label, expectedMs)`).
 2. **Update its stage text at every step** via `HudShell.setBusyLabel()`, in the
    form `"<i>/<n> <WHAT IS WORKING> · <WHAT IT IS DOING>"` — name the model or
-   service (`GPT-IMAGE-2.5`, `DEEPSEEK`, `RETRO DIFFUSION`, `LOCAL COMFYUI`), and
+   service that actually runs (`GPT-IMAGE-2.5-FLARE` for generations,
+   `GPT-IMAGE-2.5-SUNBURST` for edits — use `modelTag(provider, op)`; `DEEPSEEK`,
+   `RETRO DIFFUSION`, `LOCAL COMFYUI`), and
    say what it is producing in the user's terms. Free local steps get their own
    numbered stage; mark them so the user knows they cost nothing.
 3. **Use a duration bucket keyed by what drives the duration** — operation plus
-   shape (`anim:8`, `anchor:directional`, `tileset:image`), never an asset id, or
-   the average never converges.
+   shape plus provider/model (`timingTag(provider, op)`, e.g.
+   `anim:openai:gpt-image-2.5-sunburst:8:std`), never an asset id, or the average
+   never converges. Pass `scaleFallback(ms, provider, op)` as the fallback so an
+   unlearned bucket starts near the model's real speed.
 
 4. **Show per-unit progress when an operation has parts.** A job made of N
    frames, anchors or stages renders a chip row via `HudShell.setBusySteps()` —
@@ -81,8 +85,9 @@ Ideas worth weighing, roughly by value:
   once a bucket has enough samples to be trustworthy; hide it while unlearned.
 - **Cancellation.** A long request the user no longer wants should be abortable
   from the indicator, with the partial spend reported honestly.
-- **Cost preview.** Providers expose `costEstimate()`; showing "~$0.005" next to
-  the stage makes the wait feel purposeful and ties into the header spend chips.
+- **Cost in the stage text.** Pickers and forge buttons already show the learned
+  price (`prices` from `/api/health`, "~$" while unbilled); the busy card does not.
+  Showing the expected cost of the running step there ties the wait to the spend.
 - **Stall detection.** If a stage exceeds ~2.5x its bucket average, say so
   ("PROVIDER SLOWER THAN USUAL") instead of silently creeping.
 - **Debug surface.** `durationStats()` exists; a small dev view of learned
@@ -90,7 +95,9 @@ Ideas worth weighing, roughly by value:
 
 ## Checklist when touching an AI call
 
-- [ ] `timing` bucket passed, keyed by operation + shape
+- [ ] `timing` bucket passed, keyed by operation + shape + `timingTag(provider, op)`
+- [ ] Fallback wrapped in `scaleFallback(ms, provider, op)`
+- [ ] Cost labels read `prices` from `/api/health` — never a hard-coded price
 - [ ] Stage text set before each step, naming the model/service
 - [ ] Local/free steps distinguished from paid ones
 - [ ] Failures do not record a duration
