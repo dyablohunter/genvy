@@ -117,6 +117,21 @@ describe('imageCosts: previews learned from billed calls', () => {
     });
   });
 
+  it('prices unbilled buckets from INPUT measured on real bills of the same op, any model', () => {
+    // 16 real sunburst LOW edits averaged 1.411 cents: output 0.474 + input 0.937.
+    for (let i = 0; i < 4; i++) imageCosts.observe(SUNBURST, 'edit', 'tall', 'low', 1.411);
+    const g2EditLow = imageCosts.estimate('gpt-image-2', 'edit', 'tall', 'low');
+    expect(g2EditLow.samples).toBe(0); // still an estimate…
+    expect(g2EditLow.cents).toBeCloseTo(0.474 + 0.937, 6); // …from measured input, not the 1-cent guess
+    // gpt-image-2 medium renders 1,372 output tokens; its input is the same measured 0.937.
+    expect(imageCosts.estimate('gpt-image-2', 'edit', 'tall', 'medium').cents).toBeCloseTo(4.116 + 0.937, 6);
+    // Generations have no edit bills to learn from, so they keep the guess.
+    expect(imageCosts.estimate('gpt-image-2', 'generate', 'tall', 'low').cents).toBeCloseTo(
+      0.474 + promptCents(TYPICAL_PROMPT_TOKENS),
+      6,
+    );
+  });
+
   it('replaces the seed with the running average of real bills', () => {
     imageCosts.observe(FLARE, 'generate', 'tall', 'medium', 3);
     imageCosts.observe(FLARE, 'generate', 'tall', 'medium', 5);

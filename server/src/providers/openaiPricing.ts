@@ -188,9 +188,10 @@ class ImageCostBook {
   }
 
   /**
-   * Expected cents for one call: the learned average, or while unlearned the
-   * seed — exact output cost + prompt text (its real length when the caller
-   * has the prompt) + the reference-image guess for edits.
+   * Expected cents for one call: the learned average for this exact bucket,
+   * or while it is unbilled a seed of the EXACT output cost plus the input
+   * cost — measured from real bills of the same op when any exist, guessed
+   * (prompt text + a reference-image allowance for edits) only when none do.
    */
   estimate(
     model: string,
@@ -201,10 +202,32 @@ class ImageCostBook {
   ): Entry {
     const learned = this.entries[this.key(model, op, canvas, quality)];
     if (learned && learned.samples > 0) return { cents: learned.cents, samples: learned.samples };
-    const promptCents = ((promptTokens * tokenRates(model).textIn) / 1e6) * 100;
-    const seed =
-      outputCents(model, canvas, quality) + promptCents + (op === 'edit' ? EDIT_REFERENCE_SEED_CENTS : 0);
-    return { cents: seed, samples: 0 };
+    const measuredInput = this.learnedInputCents(op);
+    const guessedInput =
+      ((promptTokens * tokenRates(model).textIn) / 1e6) * 100 + (op === 'edit' ? EDIT_REFERENCE_SEED_CENTS : 0);
+    return { cents: outputCents(model, canvas, quality) + (measuredInput ?? guessedInput), samples: 0 };
+  }
+
+  /**
+   * Average INPUT cost (prompt text, plus the reference image for edits) of
+   * this op's real bills, across every model and tier: each bill minus its
+   * exact formula output, weighted by sample count. Input is billed at the
+   * same rates whatever model or tier renders the output, so a bucket nobody
+   * has used yet is priced from measured input instead of a guess — the
+   * reference-image guess alone put unbilled LOW edits at $0.018 while 16 real
+   * ones averaged $0.014.
+   */
+  private learnedInputCents(op: ImageOp): number | undefined {
+    let weighted = 0;
+    let samples = 0;
+    for (const [key, entry] of Object.entries(this.entries)) {
+      const [model, entryOp, canvas, quality] = key.split('|') as [string, ImageOp, PriceCanvas, ImageQualityTier];
+      if (entryOp !== op || entry.samples <= 0 || !model || !canvas || !quality) continue;
+      const input = Math.max(0, entry.cents - outputCents(model, canvas, quality));
+      weighted += input * entry.samples;
+      samples += entry.samples;
+    }
+    return samples > 0 ? weighted / samples : undefined;
   }
 
   /** The canvas x quality table for one model and op — only the tiers that model offers — for /api/health. */
