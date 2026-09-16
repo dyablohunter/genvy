@@ -358,24 +358,26 @@ describe('canvasFor', () => {
  * gpt-image-2.5 prices by canvas AND quality, and a square canvas is dearer
  * than the tall/wide one at every tier — the opposite of what a pixel-count
  * guess predicts. Until billed calls teach the price book otherwise, previews
- * are seeded from the published gpt-image-2 table (same token rates), which is
- * pinned here. Learning from real usage is covered in openaiPricing.test.ts.
+ * are seeded with the exact calculator output cost plus the prompt's text; the
+ * formula itself is pinned in openaiPricing.test.ts.
  */
 describe('gpt-image-2.5 cost by canvas (unlearned seed)', () => {
   const openai = createOpenAiProvider('test-key').capabilities.costEstimate;
   const req = (orientation: 'square' | 'landscape' | 'portrait', quality: 'low' | 'medium' | 'high') =>
     ({ prompt: 'x', orientation, quality }) as Parameters<typeof openai>[0];
 
-  it('seeds generations with the published gpt-image-2 prices, in cents', () => {
-    // 1024x1024: $0.006 / $0.053 / $0.211
-    expect(openai(req('square', 'low'))).toBeCloseTo(0.6, 6);
-    expect(openai(req('square', 'medium'))).toBeCloseTo(5.3, 6);
-    expect(openai(req('square', 'high'))).toBeCloseTo(21.1, 6);
-    // 1024x1536 and 1536x1024: $0.005 / $0.041 / $0.165
+  it("seeds generations with OpenAI's calculator output cost, in cents", () => {
+    // A one-character prompt adds 1 text token: $5/1M = 0.0005 cents.
+    const prompt = 0.0005;
+    // 1024x1024: 196 / 439 / 1756 output tokens at $30/1M
+    expect(openai(req('square', 'low'))).toBeCloseTo(0.588 + prompt, 6);
+    expect(openai(req('square', 'medium'))).toBeCloseTo(1.317 + prompt, 6);
+    expect(openai(req('square', 'high'))).toBeCloseTo(5.268 + prompt, 6);
+    // 1536x1024 and 1024x1536: 158 / 343 / 1372 output tokens
     for (const o of ['portrait', 'landscape'] as const) {
-      expect(openai(req(o, 'low'))).toBeCloseTo(0.5, 6);
-      expect(openai(req(o, 'medium'))).toBeCloseTo(4.1, 6);
-      expect(openai(req(o, 'high'))).toBeCloseTo(16.5, 6);
+      expect(openai(req(o, 'low'))).toBeCloseTo(0.474 + prompt, 6);
+      expect(openai(req(o, 'medium'))).toBeCloseTo(1.029 + prompt, 6);
+      expect(openai(req(o, 'high'))).toBeCloseTo(4.116 + prompt, 6);
     }
   });
 

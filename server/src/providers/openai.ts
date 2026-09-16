@@ -5,8 +5,6 @@ import type { ImageProvider, ImageGenerateRequest, ImageEditRequest } from './ty
 import { offlineError } from './types.js';
 import { canvasOf, imageCosts, usageCents } from './openaiPricing.js';
 
-export { OPENAI_IMAGE_PRICE } from './openaiPricing.js';
-
 /**
  * OpenAI gpt-image-2.5 (never gpt-image-1 or -2) — the reference provider the
  * whole M1 flow was proven on: native alpha via `background: 'transparent'`,
@@ -65,7 +63,9 @@ export function createOpenAiProvider(
         const op: ImageOp = 'references' in req || 'anchor' in req ? 'edit' : 'generate';
         const quality: ImageQualityTier = ('quality' in req ? req.quality : undefined) ?? 'low';
         const orientation = 'orientation' in req ? req.orientation : undefined;
-        return imageCosts.estimate(models[op], op, canvasOf(orientation), quality).cents;
+        // ~4 chars per token: the prompt's own length beats a typical guess.
+        const promptTokens = req.prompt ? Math.ceil(req.prompt.length / 4) : undefined;
+        return imageCosts.estimate(models[op], op, canvasOf(orientation), quality, promptTokens).cents;
       },
     },
     async generate(req: ImageGenerateRequest): Promise<Buffer> {

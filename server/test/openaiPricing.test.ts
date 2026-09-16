@@ -3,16 +3,19 @@ import { config } from '../src/config.js';
 import { createOpenAiProvider } from '../src/providers/openai.js';
 import {
   EDIT_REFERENCE_SEED_CENTS,
-  OPENAI_IMAGE_PRICE,
+  TYPICAL_PROMPT_TOKENS,
   canvasOf,
   imageCosts,
+  outputCents,
+  outputTokens,
   usageCents,
 } from '../src/providers/openaiPricing.js';
 
 /**
- * gpt-image-2.5 has no published per-image table, so spend is booked from the
- * token usage each response reports, and previews are learned from those bills.
- * These tests pin both halves without spending anything: fetch is stubbed.
+ * Spend is booked from the token usage each response reports; previews start
+ * from OpenAI's calculator formula (exact output cost) and then learn from
+ * those bills, since prompt and reference-image input is billed too. These
+ * tests pin all of it without spending anything: fetch is stubbed.
  */
 
 const FLARE = 'gpt-image-2.5-flare';
@@ -41,14 +44,48 @@ describe('usageCents: tokens x published rates', () => {
   });
 });
 
+describe("outputTokens: OpenAI's image calculator formula", () => {
+  it('matches the calculator for gpt-image-2.5 (flare and sunburst alike)', () => {
+    // Read off OpenAI's calculator: low 1536x1024 = 158 tokens ($0.00474),
+    // low 1024x1024 = 196 tokens ($0.00588).
+    for (const model of [FLARE, SUNBURST]) {
+      expect(outputTokens(model, 1536, 1024, 'low')).toBe(158);
+      expect(outputTokens(model, 1024, 1024, 'low')).toBe(196);
+    }
+    expect(outputCents(FLARE, 'tall', 'low')).toBeCloseTo(0.474, 6);
+    expect(outputCents(FLARE, 'square', 'low')).toBeCloseTo(0.588, 6);
+    // The renamed tiers at 1024x1024: medium 439, high 1756.
+    expect(outputTokens(FLARE, 1024, 1024, 'medium')).toBe(439);
+    expect(outputTokens(FLARE, 1024, 1024, 'high')).toBe(1756);
+  });
+
+  it('prices portrait and landscape alike, and a square above both', () => {
+    for (const q of ['low', 'medium', 'high'] as const) {
+      expect(outputTokens(FLARE, 1024, 1536, q)).toBe(outputTokens(FLARE, 1536, 1024, q));
+      expect(outputTokens(FLARE, 1024, 1024, q)).toBeGreaterThan(outputTokens(FLARE, 1536, 1024, q));
+    }
+  });
+
+  it("reproduces gpt-image-2's published table with that model's constants", () => {
+    // $0.006/$0.053/$0.211 square, $0.005/$0.041/$0.165 tall.
+    expect(outputCents('gpt-image-2', 'square', 'low')).toBeCloseTo(0.588, 3);
+    expect(outputCents('gpt-image-2', 'square', 'medium')).toBeCloseTo(5.268, 3);
+    expect(outputCents('gpt-image-2', 'square', 'high')).toBeCloseTo(21.072, 3);
+    expect(outputCents('gpt-image-2', 'tall', 'medium')).toBeCloseTo(4.116, 3);
+    expect(outputCents('gpt-image-2', 'tall', 'high')).toBeCloseTo(16.464, 3); // 5,488 tokens
+  });
+});
+
 describe('imageCosts: previews learned from billed calls', () => {
-  it('seeds unlearned buckets, with a reference-image surcharge for edits', () => {
+  const promptCents = (tokens: number) => (tokens * 5) / 1e4;
+
+  it('seeds unlearned buckets: exact output + prompt text (+ a reference guess for edits)', () => {
     expect(imageCosts.estimate(FLARE, 'generate', 'square', 'low')).toEqual({
-      cents: OPENAI_IMAGE_PRICE.square.low,
+      cents: expect.closeTo(0.588 + promptCents(TYPICAL_PROMPT_TOKENS), 9),
       samples: 0,
     });
-    expect(imageCosts.estimate(SUNBURST, 'edit', 'tall', 'high')).toEqual({
-      cents: OPENAI_IMAGE_PRICE.tall.high + EDIT_REFERENCE_SEED_CENTS,
+    expect(imageCosts.estimate(SUNBURST, 'edit', 'tall', 'high', 956)).toEqual({
+      cents: expect.closeTo(4.116 + promptCents(956) + EDIT_REFERENCE_SEED_CENTS, 9),
       samples: 0,
     });
   });
@@ -141,10 +178,8 @@ describe('OpenAI provider: flare draws, sunburst edits, usage is billed exactly'
       quality: 'low' as const,
       references: [{ image: Buffer.from(ONE_PX_PNG, 'base64'), role: 'identity' as const }],
     };
-    expect(p.capabilities.costEstimate(editReq)).toBeCloseTo(
-      OPENAI_IMAGE_PRICE.tall.low + EDIT_REFERENCE_SEED_CENTS,
-      6,
-    );
+    // Unlearned: 158 output tokens + a 1-token prompt + the reference guess.
+    expect(p.capabilities.costEstimate(editReq)).toBeCloseTo(0.474 + 0.0005 + EDIT_REFERENCE_SEED_CENTS, 6);
     await p.edit(editReq);
     expect(calls).toEqual([{ url: 'https://api.openai.com/v1/images/edits', model: SUNBURST }]);
     expect(p.capabilities.costEstimate(editReq)).toBeCloseTo(6.9, 6);

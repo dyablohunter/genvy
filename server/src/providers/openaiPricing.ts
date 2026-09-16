@@ -8,11 +8,12 @@ import type { OpenAiImageUsage } from '../services/openaiImage.js';
  *
  * - What did THIS call cost? Every gpt-image response carries a `usage` block,
  *   so the spend ledger books tokens x published rates — exact, not a guess.
- * - What WILL a call cost? OpenAI publishes token rates but no per-image table
- *   for gpt-image-2.5, and its token counts differ from gpt-image-2's. So the
- *   preview is LEARNED: a rolling average of real billed calls per model, op,
- *   canvas and quality, seeded from the published gpt-image-2 prices until a
- *   bucket has seen its first call.
+ * - What WILL a call cost? The OUTPUT is exactly predictable: OpenAI's image
+ *   calculator follows a closed formula (`outputTokens`). The INPUT is not —
+ *   prompt text and reference images are billed too and the calculator
+ *   excludes them. So the preview is LEARNED: a rolling average of real billed
+ *   calls per model, op, canvas and quality, seeded with the exact output cost
+ *   plus an input estimate until a bucket has seen its first call.
  */
 
 /** Published USD per 1M tokens. gpt-image-2.5 flare and sunburst share gpt-image-2's rates. */
@@ -58,19 +59,51 @@ export function canvasOf(orientation: ImageOrientation | undefined): PriceCanvas
 }
 
 /**
- * Seed per-image prices in CENTS: the published gpt-image-2 table (same token
- * rates). Square is not a discount on the tall/wide canvas — it costs MORE at
- * every tier.
- *
- *              1024x1024   1024x1536 / 1536x1024
- *   low          $0.006            $0.005
- *   medium       $0.053            $0.041
- *   high         $0.211            $0.165
+ * Per-quality axis constant of OpenAI's output-token formula. gpt-image-2.5
+ * renamed the tiers: its `high` spends what gpt-image-2 `medium` did, and its
+ * `max` (96) what gpt-image-2 `high` did. Genvy offers low/medium/high.
  */
-export const OPENAI_IMAGE_PRICE: Record<PriceCanvas, Record<ImageQualityTier, number>> = {
-  square: { low: 0.6, medium: 5.3, high: 21.1 },
-  tall: { low: 0.5, medium: 4.1, high: 16.5 },
+const QUALITY_AXIS: Record<'gpt-image-2.5' | 'gpt-image-2', Record<ImageQualityTier, number>> = {
+  'gpt-image-2.5': { low: 16, medium: 24, high: 48 }, // xhigh 64, max 96 — not offered
+  'gpt-image-2': { low: 16, medium: 48, high: 96 },
 };
+
+/**
+ * Output tokens for one image — OpenAI's calculator formula, verified against
+ * it: gpt-image-2.5 low is 158 tokens ($0.00474) at 1536x1024 and 196 tokens
+ * ($0.00588) at 1024x1024; the same formula with gpt-image-2's constants
+ * reproduces that model's published table. Output depends only on the canvas
+ * and quality, so flare and sunburst price identically.
+ *
+ *   tokens = ceil(q * round(q * short / long) * (2,000,000 + w*h) / 4,000,000)
+ *
+ * A square costs MORE than 1536x1024 at every tier (its short-axis factor is
+ * the full q), which is why the canvas is part of every price key.
+ */
+export function outputTokens(model: string, width: number, height: number, quality: ImageQualityTier): number {
+  const axis = QUALITY_AXIS[model.startsWith('gpt-image-2.5') ? 'gpt-image-2.5' : 'gpt-image-2'];
+  const q = axis[quality];
+  const long = Math.max(width, height);
+  const short = Math.min(width, height);
+  const shortFactor = Math.floor((2 * q * short + long) / (2 * long)); // round half up, in integers
+  return Math.ceil((q * shortFactor * (2_000_000 + width * height)) / 4_000_000);
+}
+
+/** Pixel size genvy requests per price canvas (services/openaiImage.ts SIZES; portrait and landscape tokenize alike). */
+const CANVAS_PX: Record<PriceCanvas, [number, number]> = { square: [1024, 1024], tall: [1536, 1024] };
+
+export function outputCents(model: string, canvas: PriceCanvas, quality: ImageQualityTier): number {
+  const [w, h] = CANVAS_PX[canvas];
+  return ((outputTokens(model, w, h, quality) * tokenRates(model).imageOut) / 1e6) * 100;
+}
+
+/**
+ * Prompt size assumed when a preview has no prompt in hand: genvy's image
+ * prompts measure ~130 (tileset) to ~960 (8-frame animation) tokens, ~600
+ * typical. At low quality that text is over half the image's cost, so it is
+ * not rounding error.
+ */
+export const TYPICAL_PROMPT_TOKENS = 600;
 
 /**
  * Seed surcharge for an edit's reference image, in cents — roughly 1,250 image
@@ -124,11 +157,23 @@ class ImageCostBook {
     this.scheduleSave();
   }
 
-  /** Expected cents for one call: the learned average, or the seed while unlearned. */
-  estimate(model: string, op: ImageOp, canvas: PriceCanvas, quality: ImageQualityTier): Entry {
+  /**
+   * Expected cents for one call: the learned average, or while unlearned the
+   * seed — exact output cost + prompt text (its real length when the caller
+   * has the prompt) + the reference-image guess for edits.
+   */
+  estimate(
+    model: string,
+    op: ImageOp,
+    canvas: PriceCanvas,
+    quality: ImageQualityTier,
+    promptTokens = TYPICAL_PROMPT_TOKENS,
+  ): Entry {
     const learned = this.entries[this.key(model, op, canvas, quality)];
     if (learned && learned.samples > 0) return { cents: learned.cents, samples: learned.samples };
-    const seed = OPENAI_IMAGE_PRICE[canvas][quality] + (op === 'edit' ? EDIT_REFERENCE_SEED_CENTS : 0);
+    const promptCents = ((promptTokens * tokenRates(model).textIn) / 1e6) * 100;
+    const seed =
+      outputCents(model, canvas, quality) + promptCents + (op === 'edit' ? EDIT_REFERENCE_SEED_CENTS : 0);
     return { cents: seed, samples: 0 };
   }
 
