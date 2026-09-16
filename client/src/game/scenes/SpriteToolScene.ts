@@ -1596,6 +1596,10 @@ export class SpriteToolScene extends Phaser.Scene {
     HudShell.addPanel(this.anchorPanel);
     HudShell.addPanel(this.animPanel);
     HudShell.addPanel(this.previewPanel);
+    // These panels are built lazily, long after the provider roster loaded and
+    // filled the pickers — and they start with MODEL/QUALITY hidden. Fill them
+    // now, or they stay hidden until the user happens to change provider.
+    this.refreshModelSelects();
     this.refreshClipList();
   }
 
