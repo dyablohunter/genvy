@@ -1722,14 +1722,18 @@ export class SpriteToolScene extends Phaser.Scene {
         // the next animation forges from.
         cell.addEventListener('mouseenter', () => UISound.play('hover'));
         cell.addEventListener('click', () => void this.showAnchor(d));
-        // Non-primary AI-generated views can be re-forged with extra notes;
-        // the primary is the identity itself and derive-type views are free
-        // transforms of it, so neither gets the button.
-        if (d !== (this.subject().primaryView as AnchorDir) && this.subject().derivation === 'generate') {
+        // Every AI-drawn anchor takes change requests: the primary (the
+        // identity everything else is built from) and, for generate subjects,
+        // each turned view. Derive-type views are free transforms of the
+        // primary — change the primary and they are re-derived instead.
+        const isPrimary = d === (this.subject().primaryView as AnchorDir);
+        if (isPrimary || this.subject().derivation === 'generate') {
           const regen = document.createElement('div');
           regen.className = 'g-anchor-regen';
-          regen.textContent = '↻';
-          regen.title = `RE-FORGE THE ${d.toUpperCase()} VIEW WITH EXTRA NOTES`;
+          regen.textContent = isPrimary ? '✎' : '↻';
+          regen.title = isPrimary
+            ? `ASK FOR CHANGES TO THE ${d.toUpperCase()} ANCHOR`
+            : `RE-FORGE THE ${d.toUpperCase()} VIEW WITH EXTRA NOTES`;
           regen.addEventListener('click', (ev) => {
             ev.stopPropagation();
             UISound.play('click');
@@ -1920,11 +1924,40 @@ export class SpriteToolScene extends Phaser.Scene {
       this.anchors[dir] = true;
       this.anchorStamp++;
       this.staleViews.delete(dir);
-      this.paintAnchorGrid();
+      // Putting an old primary back changes the identity just as much as
+      // editing it does.
+      const primaryRestored = dir === (this.subject().primaryView as AnchorDir);
+      if (primaryRestored) await this.rippleFromPrimary(wsId);
+      if (primaryRestored) await this.refreshAnchors();
+      else this.paintAnchorGrid();
       await this.showAnchor(dir);
       UISound.play('confirm');
-      HudShell.toast(`${dir.toUpperCase()} ANCHOR RESTORED`, 'success');
+      const stale = this.staleViews.size;
+      HudShell.toast(
+        primaryRestored && stale > 0
+          ? `${dir.toUpperCase()} ANCHOR RESTORED — ${stale} VIEW(S) STILL SHOW THE REPLACED LOOK, RE-FORGE THEM`
+          : `${dir.toUpperCase()} ANCHOR RESTORED`,
+        primaryRestored && stale > 0 ? 'warn' : 'success',
+      );
     });
+  }
+
+  /**
+   * The primary anchor is the identity every other view is built from, so a
+   * new primary (changed or restored) makes them out of date: derive-type
+   * views are rebuilt from it for free, and turned views are flagged to
+   * re-forge — never silently re-spent.
+   */
+  private async rippleFromPrimary(wsId: string) {
+    const primary = this.subject().primaryView as AnchorDir;
+    if (this.subject().derivation === 'derive') {
+      HudShell.setBusyLabel('RE-DERIVING THE OTHER VIEWS (FREE)...');
+      await this.deriveFreeViews(wsId, { force: true });
+      return;
+    }
+    for (const d of this.subjectViews()) {
+      if (d !== primary && this.anchors[d]) this.staleViews.add(d);
+    }
   }
 
   /** Fill a model select for one provider id (modal copies of the panel pickers). */
@@ -1964,16 +1997,31 @@ export class SpriteToolScene extends Phaser.Scene {
 
     const modal = document.createElement('div');
     modal.className = 'g-modal';
+    const primary = this.subject().primaryView as AnchorDir;
+    // The primary anchor is the identity itself: there is nothing to re-turn
+    // it from, so it only ever refines in place — and changing it ripples out
+    // to every view and clip built from it, which the modal says up front.
+    const isPrimary = dir === primary;
+
     const title = document.createElement('div');
     title.className = 'g-modal-title';
-    title.textContent = `RE-FORGE ${dir.toUpperCase()} ANCHOR`;
+    title.textContent = isPrimary ? `CHANGE THE ${dir.toUpperCase()} ANCHOR` : `RE-FORGE ${dir.toUpperCase()} ANCHOR`;
     const notes = textArea(
       this.anchorRegenNotes[dir] ?? '',
-      `what should change, e.g. 'wings folded tighter, beak angled ${dir}, keep the chest gem visible'`,
+      isPrimary
+        ? `what should change, e.g. 'make him broader in the shoulders, hood down, boots dark grey'`
+        : `what should change, e.g. 'wings folded tighter, beak angled ${dir}, keep the chest gem visible'`,
     );
     notes.style.minHeight = '96px';
-
-    const primary = this.subject().primaryView as AnchorDir;
+    const rippleHint = document.createElement('div');
+    rippleHint.className = 'g-hint';
+    const others = this.subjectViews().filter((d) => d !== primary && this.anchors[d]);
+    rippleHint.textContent =
+      others.length === 0
+        ? 'EVERYTHING NOT MENTIONED STAYS AS DRAWN. THE CURRENT VERSION IS KEPT IN HISTORY.'
+        : this.subject().derivation === 'derive'
+          ? `EVERYTHING NOT MENTIONED STAYS AS DRAWN. ${others.length} OTHER VIEW(S) ARE RE-DERIVED FROM THE NEW ANCHOR FOR FREE; CLIPS KEEP THE OLD LOOK UNTIL REMADE.`
+          : `EVERYTHING NOT MENTIONED STAYS AS DRAWN. ${others.length} OTHER VIEW(S) WERE TURNED FROM THIS ANCHOR — THEY ARE MARKED TO RE-FORGE; CLIPS KEEP THE OLD LOOK UNTIL REMADE.`;
 
     // What the edit is drawn FROM: this view (keep what is already right) or
     // the primary anchor (start the turn over from the identity).
@@ -2067,12 +2115,12 @@ export class SpriteToolScene extends Phaser.Scene {
     cancel.setAttribute('label', 'CANCEL');
     const go = document.createElement('genvy-button') as GenvyButton;
     go.setAttribute('variant', 'accent');
-    go.setAttribute('label', 'RE-FORGE VIEW');
+    go.setAttribute('label', isPrimary ? 'APPLY CHANGES' : 'RE-FORGE VIEW');
     row.append(cancel, go);
     modal.append(
       title,
-      field('EXTRA INDICATIONS', notes),
-      field('BASED ON', baseSel),
+      field(isPrimary ? 'WHAT SHOULD CHANGE' : 'EXTRA INDICATIONS', notes),
+      ...(isPrimary ? [rippleHint] : [field('BASED ON', baseSel)]),
       field('PROVIDER', providerSel),
       modelField,
       optionsRow,
@@ -2106,8 +2154,11 @@ export class SpriteToolScene extends Phaser.Scene {
     });
     go.onClick(() => {
       this.anchorRegenNotes[dir] = notes.value;
+      if (isPrimary && !notes.value.trim()) {
+        return HudShell.toast('SAY WHAT SHOULD CHANGE FIRST', 'error');
+      }
       const opts = {
-        base: baseSel.value as 'current' | 'primary',
+        base: isPrimary ? ('current' as const) : (baseSel.value as 'current' | 'primary'),
         provider: providerSel.value || undefined,
         modelFamily: modelSel.value || undefined,
         renderSize: modelField.style.display === 'none' ? undefined : Number(sizeSel.value) || undefined,
@@ -2177,6 +2228,30 @@ export class SpriteToolScene extends Phaser.Scene {
       });
       this.anchors[dir] = true;
       this.staleViews.delete(dir);
+
+      if (dir === primary) {
+        // The identity changed: ripple it out, then the new drawing has to
+        // pass the same lock gate the original pick did.
+        await this.rippleFromPrimary(wsId);
+        HudShell.setBusyLabel('RUNNING THE ANCHOR LOCK GATE (FREE)...');
+        const gate = await api.anchorGate({ assetId: wsId, sourceFile: this.anchorFile(primary) });
+        this.anchorStamp++;
+        await this.refreshAnchors();
+        if (this.anchorView === dir) await this.showAnchor(dir);
+        void HudShell.refreshSpend();
+        UISound.play('complete');
+        const stale = this.staleViews.size;
+        HudShell.toast(
+          !gate.pass
+            ? `${dir.toUpperCase()} ANCHOR CHANGED, BUT THE LOCK GATE FAILS — RESTORE THE OLD VERSION FROM ✎ OR TRY AGAIN`
+            : stale > 0
+              ? `${dir.toUpperCase()} ANCHOR CHANGED — ${stale} VIEW(S) STILL SHOW THE OLD LOOK, RE-FORGE THEM`
+              : `${dir.toUpperCase()} ANCHOR CHANGED & GATE PASSED — CLIPS KEEP THE OLD LOOK UNTIL REMADE`,
+          gate.pass && stale === 0 ? 'success' : 'warn',
+        );
+        return;
+      }
+
       this.anchorStamp++;
       this.paintAnchorGrid();
       // If that view is on the stage, swap in the fresh drawing.
@@ -2541,13 +2616,7 @@ export class SpriteToolScene extends Phaser.Scene {
         provider: this.editProvider(),
       });
       // The base changed, so every view built from it is out of date.
-      const derived = (this.subjectViews()).filter((d) => d !== primary && this.anchors[d]);
-      if (this.subject().derivation === 'derive') {
-        HudShell.setBusyLabel('RE-DERIVING THE OTHER VIEWS (FREE)...');
-        await this.deriveFreeViews(wsId, { force: true });
-      } else {
-        for (const d of derived) this.staleViews.add(d);
-      }
+      await this.rippleFromPrimary(wsId);
       HudShell.setBusyLabel('RUNNING THE ANCHOR LOCK GATE...');
       const gate = await api.anchorGate({ assetId: wsId, sourceFile: this.anchorFile(primary) });
       this.anchorStamp++;

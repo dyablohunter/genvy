@@ -292,7 +292,10 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
       animation: `GENERATING ${(category ?? 'idle').toUpperCase()} (${frames ?? 4} FRAMES)`,
       anchor: 'DRAWING ANCHOR CANDIDATES',
       variants: 'DRAWING VARIANTS',
-      anchorDirectional: `TURNING THE ANCHOR${req.body.direction ? ` INTO ${req.body.direction.toUpperCase()}` : ''}`,
+      // A refine redraws the view it was given; only a turn changes direction.
+      anchorDirectional: req.body.refine
+        ? `REDRAWING THE ${req.body.direction ? `${req.body.direction.toUpperCase()} ` : ''}ANCHOR WITH YOUR CHANGES`
+        : `TURNING THE ANCHOR${req.body.direction ? ` INTO ${req.body.direction.toUpperCase()}` : ''}`,
       neutralReset: 'STRIPPING PROPS & EFFECTS',
       tileset: 'DRAWING THE TILE GRID',
       scene: 'PAINTING THE SCENE',
