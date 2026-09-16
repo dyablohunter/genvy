@@ -122,6 +122,14 @@ interface AiImageBody {
   effect?: string;
   /** kind 'animation': gate-and-retry attempts (1-3, default 1). */
   attempts?: number;
+  /**
+   * Anchor edits: library file of the anchor the result must match. Its
+   * shape picks the request canvas (portrait or landscape by its longer
+   * side), and the result is re-saved trimmed, padded and scaled so its
+   * longer side equals that anchor's. The model's untouched output is kept
+   * as `raw_<outName>` — one per output, overwritten each time.
+   */
+  matchSizeOf?: string;
 }
 
 const EDIT_KINDS = new Set(['animation', 'anchorDirectional', 'neutralReset', 'sceneCutout']);
@@ -256,13 +264,28 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
   });
 
   app.post<{ Body: AiImageBody }>('/api/ai/image', async (req) => {
-    const { orientation, assetId, kind, referenceFile, category, frames, styleHint } =
-      req.body ?? {};
+    const { assetId, kind, referenceFile, category, frames, styleHint } = req.body ?? {};
     const prompt = req.body?.prompt ?? '';
     // Edit kinds build their whole prompt server-side (choreography, anchor
     // lock, layout); the user text is only supplementary detail there.
     const promptOptional = kind === 'animation' || kind === 'anchorDirectional' || kind === 'neutralReset';
-    if (!orientation) throw new LibraryError(400, 'Body must include orientation');
+    if (!req.body?.orientation) throw new LibraryError(400, 'Body must include orientation');
+    // Read the size target BEFORE anything is written: editing the primary
+    // anchor overwrites the very file it has to match.
+    let sizeTarget: { width: number; height: number } | undefined;
+    if (req.body.matchSizeOf) {
+      const meta = await sharp(library.resolveFile(req.body.matchSizeOf)).metadata().catch(() => {
+        throw new LibraryError(404, `Size reference not found: ${req.body.matchSizeOf}`);
+      });
+      if (meta.width && meta.height) sizeTarget = { width: meta.width, height: meta.height };
+    }
+    // An anchor edit asks for the canvas that fits the anchor it matches:
+    // 1536x1024 for a wide one, 1024x1536 for a tall (or square) one.
+    const orientation = sizeTarget
+      ? sizeTarget.width > sizeTarget.height
+        ? ('landscape' as const)
+        : ('portrait' as const)
+      : req.body.orientation;
     if (!prompt && !promptOptional) {
       throw new LibraryError(400, `kind "${kind ?? 'raw'}" requires a prompt`);
     }
@@ -611,6 +634,16 @@ export function registerAiRoutes(app: FastifyInstance, library: Library) {
 
     const id = assetId && assetId.length > 0 ? assetId : newAssetId('spritesheet');
     const dir = await library.fileDir(id);
+    if (sizeTarget) {
+      // Keep the full-resolution output (the stage the re-save is derived
+      // from) under ONE name per anchor, overwritten each time, so a fit can
+      // be redone without re-spending and old raws never pile up.
+      await fs.writeFile(path.join(dir, `raw_${outName}`), png);
+      activity.update({ label: 'FITTING THE RESULT TO THE ANCHOR SIZE (FREE)...' });
+      png = await pipe.fitAnchorToSize(png, sizeTarget, {
+        kernel: style?.postSteps.includes('pixelSnap') ? 'nearest' : 'lanczos3',
+      });
+    }
     await fs.writeFile(path.join(dir, outName), png);
     const meta = await sharp(png).metadata();
     return {

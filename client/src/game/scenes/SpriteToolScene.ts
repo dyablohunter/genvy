@@ -69,6 +69,8 @@ const STRIP_ROW = 9999; // auto-slice column override that forces a single-row s
 /** Sprite Pipeline v2 anchor chain: east is a computed flip of west, never generated. */
 const ANCHOR_DIRS = ['south', 'west', 'east', 'north'] as const;
 type AnchorDir = (typeof ANCHOR_DIRS)[number];
+/** Saved versions kept per anchor view; older snapshots are deleted from disk. */
+const ANCHOR_HISTORY_CAP = 8;
 
 /** Side-view locomotion prefers a side anchor; everything else the base view. */
 function defaultDirFor(cat: string, primary: AnchorDir = 'south'): AnchorDir {
@@ -1904,9 +1906,15 @@ export class SpriteToolScene extends Phaser.Scene {
     try {
       // mirror:false with no rotation is a server-side copy.
       await api.flip({ assetId: wsId, sourceFile: this.anchorFile(dir), outName: name, mirror: false });
-      const list = [name, ...(this.anchorHistory[dir] ?? [])].slice(0, 8);
+      const all = [name, ...(this.anchorHistory[dir] ?? [])];
+      const list = all.slice(0, ANCHOR_HISTORY_CAP);
       this.anchorHistory[dir] = list;
       this.persistConcept(wsId);
+      // Versions that fall off the list are unreachable from the UI — delete
+      // their files instead of leaving them on disk forever.
+      for (const dropped of all.slice(ANCHOR_HISTORY_CAP)) {
+        void api.deleteFile(wsId, dropped).catch(() => {});
+      }
     } catch {
       /* history is best-effort — never block the re-forge itself */
     }
@@ -1921,6 +1929,9 @@ export class SpriteToolScene extends Phaser.Scene {
       HudShell.setBusyLabel('SWAPPING IN THE SAVED ANCHOR (FREE)...');
       await this.snapshotAnchor(wsId, dir); // the replaced one stays recoverable
       await api.flip({ assetId: wsId, sourceFile: file, outName: this.anchorFile(dir), mirror: false });
+      // The kept raw output belonged to the drawing just replaced — remove it
+      // so a stale full-size copy never outlives its anchor.
+      void api.deleteFile(wsId, `raw_${this.anchorFile(dir)}`).catch(() => {});
       this.anchors[dir] = true;
       this.anchorStamp++;
       this.staleViews.delete(dir);
@@ -2218,6 +2229,9 @@ export class SpriteToolScene extends Phaser.Scene {
         renderSize: opts.renderSize,
         assetId: wsId,
         referenceFile: `${wsId}/${this.anchorFile(fromPrimary ? primary : dir)}`,
+        // One scale for the whole chain: the result is re-saved at the primary
+        // anchor's size (when this IS the primary, its drawing before the edit).
+        matchSizeOf: `${wsId}/${this.anchorFile(primary)}`,
         direction: dir,
         outName: this.anchorFile(dir),
         styleHint: this.styleHint(),
@@ -2554,6 +2568,8 @@ export class SpriteToolScene extends Phaser.Scene {
               modelFamily: this.modelFamilyFor(this.genProviderSel, this.genModelSel, 'anchor-directional'),
               quality: this.qualityFor(),
               referenceFile: `${wsId}/${this.anchorFile(primary)}`,
+              // Every view comes back at the primary's size and orientation.
+              matchSizeOf: `${wsId}/${this.anchorFile(primary)}`,
               direction: view,
               outName: this.anchorFile(view),
               styleHint: this.styleHint(),
@@ -2609,6 +2625,7 @@ export class SpriteToolScene extends Phaser.Scene {
         assetId: wsId,
         referenceFile: `${wsId}/${this.anchorFile(primary)}`,
         effect: props.length > 0 ? props.join(', ') : undefined,
+        matchSizeOf: `${wsId}/${this.anchorFile(primary)}`,
         outName: this.anchorFile(primary),
         styleHint: this.styleHint(),
         styleId: this.styleId(),

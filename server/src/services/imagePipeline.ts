@@ -985,3 +985,54 @@ export async function makeThumbnail(png: Buffer, size = 128): Promise<Buffer> {
     .png()
     .toBuffer();
 }
+
+/**
+ * Margin around the figure when an anchor is re-saved, as a fraction of the
+ * figure's longest side — the same 8% the variant pick pads its crop with
+ * (SpriteToolScene.safePad, before neighbour clamping), so an edited anchor
+ * sits in its canvas the way a picked one does.
+ */
+export const ANCHOR_PAD = 0.08;
+
+/**
+ * Re-save a generated anchor at the size of the anchor it must match.
+ *
+ * The model always paints a full 1024x1536 / 1536x1024 canvas, while a picked
+ * anchor is a tight padded crop of one grid cell (~320x760). Written as-is,
+ * an edited anchor carried twice the pixels and far more empty margin than
+ * the one it replaced. This trims to the figure, pads it like the pick does,
+ * and scales so the canvas's LONGER side equals the target's longer side —
+ * aspect ratio kept, so a wider pose simply comes back wider.
+ *
+ * `kernel`: 'nearest' for pixel styles (no invented in-between colours),
+ * 'lanczos3' otherwise. A figure it cannot find is returned unchanged.
+ */
+export async function fitAnchorToSize(
+  png: Buffer,
+  target: { width: number; height: number },
+  opts: { pad?: number; kernel?: 'nearest' | 'lanczos3' } = {},
+): Promise<Buffer> {
+  let raw = await loadRaw(png);
+  if (!hasTransparency(raw)) raw = removeBackground(raw, 24, 'both');
+  const box = contentBox(raw);
+  if (!box) return png;
+  const figure = extractBoxes(raw, [box])[0]!;
+  const pad = Math.round(Math.max(figure.width, figure.height) * (opts.pad ?? ANCHOR_PAD));
+  const paddedW = figure.width + 2 * pad;
+  const paddedH = figure.height + 2 * pad;
+  const scale = Math.max(target.width, target.height) / Math.max(paddedW, paddedH);
+  const width = Math.max(1, Math.round(paddedW * scale));
+  const height = Math.max(1, Math.round(paddedH * scale));
+  // Two passes on purpose: sharp runs resize BEFORE extend whatever order they
+  // are chained in, which would add the margin at full size after scaling.
+  const padded = await sharp(figure.data, {
+    raw: { width: figure.width, height: figure.height, channels: 4 },
+  })
+    .extend({ top: pad, bottom: pad, left: pad, right: pad, background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toBuffer();
+  return sharp(padded)
+    .resize(width, height, { kernel: opts.kernel ?? 'lanczos3', fit: 'fill' })
+    .png()
+    .toBuffer();
+}

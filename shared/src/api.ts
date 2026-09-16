@@ -136,6 +136,14 @@ export interface AiImageRequest {
    * is kept ("one repair attempt, then publish best").
    */
   attempts?: number;
+  /**
+   * Anchor edits: library file of the anchor the result must match. The
+   * server picks portrait/landscape by that anchor's longer side (overriding
+   * `orientation`), then re-saves the result trimmed, padded and scaled so
+   * its longer side equals the anchor's. The untouched model output is kept
+   * as `raw_<outName>`, one per output, overwritten each time.
+   */
+  matchSizeOf?: string;
 }
 
 /**
