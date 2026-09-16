@@ -383,6 +383,8 @@ export class SpriteToolScene extends Phaser.Scene {
   private anchorPanel: GenvyPanel | null = null;
   private anchorGrid: HTMLElement | null = null;
   private forgeViewsBtn: GenvyButton | null = null;
+  /** An anchor-chain forge is running — its button holds instead of relabeling per landed view. */
+  private forgingViews = false;
   private allViewsBtn: GenvyButton | null = null;
   private pivotBtn: GenvyButton | null = null;
   private anchorHint: HTMLElement | null = null;
@@ -1750,7 +1752,9 @@ export class SpriteToolScene extends Phaser.Scene {
       // free. Offered on both the empty cell (create it) and the drawn one
       // (replace a bad turn with a clean mirror), whenever the twin exists.
       const twin = mirrorView(d);
-      if (twin && this.anchors[twin]) {
+      // Never offered from an out-of-date twin: that copies the old drawing
+      // and clears this view's stale mark without fixing anything.
+      if (twin && this.anchors[twin] && !this.staleViews.has(twin)) {
         const mirrorBtn = document.createElement('div');
         mirrorBtn.className = 'g-anchor-mirror';
         mirrorBtn.textContent = '⇄';
@@ -2369,27 +2373,28 @@ export class SpriteToolScene extends Phaser.Scene {
   private describeAnchorWork(views: AnchorDir[]) {
     const btn = this.forgeViewsBtn;
     const hint = this.anchorHint;
-    const primary = this.subject().primaryView as AnchorDir;
-    const missing = views.filter((d) => !this.anchors[d] || this.staleViews.has(d));
     const derives = this.subject().derivation === 'derive';
-    const willExist = new Set(ANCHOR_DIRS.filter((d) => this.anchors[d]));
-    const paid = missing.filter((d) => {
-      const op = derives ? deriveOp(primary, d) : null;
-      const opposite = mirrorView(d) as AnchorDir | null;
-      const free =
-        (!!op && willExist.has(op.from as AnchorDir)) || (!!opposite && willExist.has(opposite));
-      willExist.add(d);
-      return !free;
-    });
+    // The same plan the forge runs, so the label never promises a free mirror
+    // the forge would not make (or vice versa).
+    const plan = this.planAnchorWork();
+    const missing = plan.map((p) => p.view);
+    const paid = plan.filter((p) => !p.free);
 
     if (btn) {
       const single = views.length <= 1;
-      btn.style.display = single || missing.length === 0 ? 'none' : '';
-      btn.setLabel(
-        paid.length === 0
-          ? `⇄ DERIVE ${missing.map((d) => d.toUpperCase()).join(' + ')} · FREE`
-          : `FORGE ${missing.map((d) => d.toUpperCase()).join(' + ')}`,
-      );
+      if (this.forgingViews) {
+        btn.style.display = '';
+        btn.setLabel('FORGING…');
+        btn.disabled = true;
+      } else {
+        btn.disabled = false;
+        btn.style.display = single || missing.length === 0 ? 'none' : '';
+        btn.setLabel(
+          paid.length === 0
+            ? `⇄ DERIVE ${missing.map((d) => d.toUpperCase()).join(' + ')} · FREE`
+            : `FORGE ${missing.map((d) => d.toUpperCase()).join(' + ')}`,
+        );
+      }
     }
     if (hint) {
       hint.textContent =
@@ -2572,32 +2577,18 @@ export class SpriteToolScene extends Phaser.Scene {
     }
     const wsId = ws.wsId;
 
-    // Plan the work: mirrors are free, the rest are edits off the base anchor.
-    const missing = this.subjectViews().filter((d) => !this.anchors[d] || this.staleViews.has(d));
-    // A mirror needs a source that actually exists — either already, or from
-    // an earlier step of this same run.
-    const derives = subject.derivation === 'derive';
-    const willExist = new Set(ANCHOR_DIRS.filter((d) => this.anchors[d]));
-    const plan = missing.map((view) => {
-      // Rotations are only meaningful for subjects whose facing is an
-      // orientation; a character rotated 90° is lying on the floor.
-      const op = derives ? deriveOp(primary, view) : null;
-      const opposite = mirrorView(view) as AnchorDir | null;
-      const free =
-        op && willExist.has(op.from as AnchorDir)
-          ? { from: op.from as AnchorDir, mirror: op.mirror, degrees: op.degrees }
-          : opposite && willExist.has(opposite)
-            ? { from: opposite, mirror: true, degrees: 0 }
-            : null;
-      willExist.add(view);
-      return { view, free };
-    });
+    const plan = this.planAnchorWork();
     if (plan.length === 0) return HudShell.toast('EVERY VIEW FOR THIS SUBJECT ALREADY EXISTS');
 
     const paid = plan.filter((p) => !p.free).length;
     // Say exactly what is being rebuilt and why, so a 3-chip loader after a
     // pivot edit doesn't look like it is redoing untouched work.
     const rebuilds = plan.filter((p) => this.staleViews.has(p.view)).length;
+    // Views land in the grid one by one, and each repaint relabels the forge
+    // button — mid-run it read "FORGE NORTH" while north was still drawing,
+    // which looked like north had been skipped. Hold the button while working.
+    this.forgingViews = true;
+    try {
     await this.busy(
       paid > 0
         ? `FORGING ${paid} ANCHOR VIEW(S)...`
@@ -2665,6 +2656,46 @@ export class SpriteToolScene extends Phaser.Scene {
         fallbackMs: Math.max(4000, scaleFallback(38000 * paid, this.editProvider(), 'edit')),
       },
     );
+    } finally {
+      this.forgingViews = false;
+      this.describeAnchorWork(this.subjectViews());
+    }
+  }
+
+  /**
+   * Plan the anchor-chain work: every missing or stale view, and how to make
+   * it — a free mirror/rotation when a valid source exists, otherwise a paid
+   * edit off the primary anchor.
+   *
+   * A source is valid only if it exists and is NOT stale, or was made earlier
+   * in this same plan. Counting stale views as sources once "rebuilt" west
+   * from the old east and east from that west after the primary changed: the
+   * files came back byte-identical, the stale marks cleared, and both views
+   * kept the anatomy the user had just fixed.
+   */
+  private planAnchorWork(): {
+    view: AnchorDir;
+    free: { from: AnchorDir; mirror: boolean; degrees: number } | null;
+  }[] {
+    const subject = this.subject();
+    const primary = subject.primaryView as AnchorDir;
+    // Rotations are only meaningful for subjects whose facing is an
+    // orientation; a character rotated 90° is lying on the floor.
+    const derives = subject.derivation === 'derive';
+    const missing = this.subjectViews().filter((d) => !this.anchors[d] || this.staleViews.has(d));
+    const valid = new Set(ANCHOR_DIRS.filter((d) => this.anchors[d] && !this.staleViews.has(d)));
+    return missing.map((view) => {
+      const op = derives ? deriveOp(primary, view) : null;
+      const opposite = mirrorView(view) as AnchorDir | null;
+      const free =
+        op && valid.has(op.from as AnchorDir)
+          ? { from: op.from as AnchorDir, mirror: op.mirror, degrees: op.degrees }
+          : opposite && valid.has(opposite)
+            ? { from: opposite, mirror: true, degrees: 0 }
+            : null;
+      valid.add(view); // made by this plan, so a valid source for later steps
+      return { view, free };
+    });
   }
 
   /** Neutral reset: preserve/change edit that strips props & effects off the south anchor. */
